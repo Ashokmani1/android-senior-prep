@@ -129,7 +129,47 @@ val s = buildString {                    // scoped StringBuilder, returns toStri
 ### `Any`, `Unit`, `Nothing`
 
 - **`Any`** — root of the non-null hierarchy (`Any?` is the true top type). Analogous to `java.lang.Object` but with only `equals`/`hashCode`/`toString`.
-- **`Unit`** — the type with exactly one value, `Unit`. Return type of functions that return nothing meaningful (like `void`), but it is a real object, so it satisfies generics: `Function0<Unit>` works where `void` couldn't.
+- **`Unit`** — The type with exactly one value: the singleton object `Unit`. It represents the return type of functions that do not return a meaningful value. Unlike Java's `void` primitive keyword, Kotlin's `Unit` is a **real object**, allowing it to be used as a generic type argument.
+
+#### 1. Implicit Return Type
+Functions with no explicit return type return `Unit` implicitly. The compiler adds the return statement automatically:
+```kotlin
+fun logEvent(event: String): Unit {
+    println("Event logged: $event")
+    // return Unit is compiled implicitly
+}
+
+fun logEventShort(event: String) { // compiles identically to returning Unit
+    println("Event: $event")
+}
+```
+
+#### 2. Satisfying Generic Class Boundaries
+In Java, you cannot use primitive `void` in generics (e.g., `List<void>` is invalid). Java developers must use `List<Void>` and explicitly write `return null;` at the end of functions. 
+In Kotlin, because `Unit` is a first-class object, it satisfies generic constraints naturally:
+```kotlin
+interface TaskProcessor<T> {
+    fun process(): T
+}
+
+// Satisfies the generic interface without returning null
+class FireAndForgetTask : TaskProcessor<Unit> {
+    override fun process() {
+        sendAnalyticsSignal()
+        // No return statement needed; Unit is returned implicitly
+    }
+}
+```
+
+#### 3. Functional Lambda Types
+Lambdas that return no value explicitly declare `Unit` as their return signature:
+```kotlin
+val onClickListener: (View) -> Unit = { view ->
+    triggerAnimation(view)
+    // Implicitly returns the Unit singleton
+}
+```
+
 - **`Nothing`** – The type with *zero* instances. It is Kotlin's **bottom type**, which sits at the very bottom of the type hierarchy and is a subtype of all other types (including non-nullable and nullable types). A function that returns `Nothing` can **never return normally** – it either throws an exception or enters an infinite loop.
 
 #### 1. Function That Never Completes Normally
