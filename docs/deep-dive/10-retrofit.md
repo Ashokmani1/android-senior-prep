@@ -827,3 +827,17 @@ OkHttpClient.Builder()
     **Follow-up — why rethrow `CancellationException`?** Structured concurrency signals
     cancellation by throwing it; a broad `catch (Throwable)` that swallows it leaves coroutines
     running after their scope is cancelled and breaks `withTimeout`/job cancellation.
+
+!!! question "7. Should you model Retrofit request/response DTOs as Kotlin `data class`es or standard `class`es, and what are the tradeoffs?"
+    **Answer:** You should **almost always model request/response DTOs as `data class`es**. DTOs are pure data containers (value objects) with no behavior. Declaring them as data classes auto-generates `equals()`, `hashCode()`, `toString()`, and `copy()`, which are highly beneficial:
+    
+    1.  **Debugging & Logging:** The auto-generated `toString()` prints clean, readable property values (e.g. `UserResponse(id=123, name=Ann)`) in Logcat instead of generic class references (`com.app.UserResponse@3f2a1b`).
+    2.  **Unit Testing:** Unit tests comparing network payloads require structural equality. `data class`es compare property values out of the box (`expectedResponse == actualResponse`), whereas standard classes do referential comparisons, forcing you to write custom assertion checkers or manually override `equals()`.
+    3.  **Payload Mutation:** The generated `copy()` method makes it easy to copy and mutate request structures (e.g. duplicating a query parameter set or updating pagination limits) for downstream calls.
+    
+    **When to use a normal `class` (or other structures):**
+    *   **Polymorphic JSON:** If your API returns a list of items with varying schemas based on a `"type"` field, you cannot use a simple `data class` because data classes cannot be `open` or `abstract`. You must model them using an inheritance hierarchy (`sealed interface` or `sealed class` with discrete `data class` subtypes).
+    *   **Empty Payloads:** If an endpoint requires an empty JSON body or has no parameters, a `data class` cannot be declared because it requires at least one primary constructor parameter. Use a standard `class` or a `data object` instead.
+    
+    **Follow-up:** *What is the risk of using mutable variables (`var`) inside DTO primary constructors?* — It breaks `hashCode` stability. If a DTO is mutated after being placed in a `HashMap` or `HashSet` (such as a local deduplication cache), the entry cannot be retrieved because its bucket index is computed from a hash code that has since changed. Keep all DTO fields `val` and immutable.
+
