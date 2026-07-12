@@ -16,13 +16,15 @@
 
 /* Light Mode Styling */
 [data-md-color-scheme="default"] {
-  --md-primary-fg-color: #2e3b82;
-  --md-primary-fg-color--transparent: rgba(46, 59, 130, 0.08);
+  --md-primary-fg-color: #3f51b5;
+  --md-primary-fg-color--transparent: rgba(63, 81, 181, 0.08);
   --md-primary-bg-color: #ffffff;
   --md-accent-fg-color: #10b981;
   --md-accent-bg-color: rgba(16, 185, 129, 0.1);
   
-  /* Text and BG colors */
+  /* Headings & Text */
+  --md-heading-color: #1e293b;
+  --md-typeset-color: #334155;
   --md-default-fg-color: #1e293b;
   --md-default-bg-color: #fafbfc;
   --md-code-bg-color: #f1f5f9;
@@ -34,18 +36,20 @@
 
 /* Dark Mode (Slate) Styling */
 [data-md-color-scheme="slate"] {
-  --md-primary-fg-color: #0f172a;
-  --md-primary-fg-color--transparent: rgba(99, 102, 241, 0.12);
+  --md-primary-fg-color: #818cf8; /* Bright indigo in dark mode */
+  --md-primary-fg-color--transparent: rgba(129, 140, 248, 0.15);
   --md-primary-bg-color: #0b0f19;
   --md-accent-fg-color: #34d399;
   --md-accent-bg-color: rgba(52, 211, 153, 0.15);
 
-  /* Text and BG colors */
+  /* Headings & Text */
+  --md-heading-color: #f1f5f9;
+  --md-typeset-color: #cbd5e1;
   --md-default-fg-color: #e2e8f0;
   --md-default-bg-color: #0b0f19;
   --md-code-bg-color: #1e293b;
   --md-admonition-bg-color: #111827;
-  --border-color-soft: rgba(255, 255, 255, 0.06);
+  --border-color-soft: rgba(255, 255, 255, 0.08);
   --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
   --table-header-bg: #1f2937;
 }
@@ -56,6 +60,7 @@
 
 body {
   background-color: var(--md-default-bg-color);
+  color: var(--md-typeset-color);
   letter-spacing: -0.011em;
   line-height: 1.625;
 }
@@ -66,7 +71,7 @@ body {
   letter-spacing: -0.03em;
   font-size: 2.25rem;
   margin-bottom: 1.5rem;
-  color: var(--md-primary-fg-color);
+  color: var(--md-heading-color) !important;
   position: relative;
 }
 
@@ -76,12 +81,14 @@ body {
   font-size: 1.5rem;
   margin-top: 2rem;
   margin-bottom: 1rem;
+  color: var(--md-heading-color) !important;
 }
 
 .md-typeset h3 {
   font-weight: 600;
   letter-spacing: -0.015em;
   font-size: 1.2rem;
+  color: var(--md-heading-color) !important;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -96,7 +103,7 @@ body {
 }
 
 [data-md-color-scheme="slate"] .md-header {
-  background-color: rgba(15, 23, 42, 0.8) !important;
+  background-color: rgba(15, 23, 42, 0.85) !important;
 }
 
 /* Search bar styling */
@@ -150,10 +157,6 @@ body {
   font-weight: 700 !important;
   border-left: 3px solid var(--md-accent-fg-color);
   border-radius: 0 var(--border-radius-sm) var(--border-radius-sm) 0;
-}
-
-[data-md-color-scheme="slate"] .md-nav__link--active {
-  color: var(--md-accent-fg-color) !important;
 }
 
 /* ─────────────────────────────────────────────────────────────
