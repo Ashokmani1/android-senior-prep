@@ -214,6 +214,13 @@ fun SearchScreen(query: String, repo: Repo) {
     - `scope.launch { }` directly in the body → a new coroutine on every recomposition. Wrong.
     - `LaunchedEffect(Unit) { }` to react to a click → the click isn't a key; the effect ran once at composition, not on the click. Wrong. Use `rememberCoroutineScope`.
 
+!!! note "Handling exceptions inside a composable"
+    A composable function itself isn't a place to `try`/`catch` around state that changes shape mid-recomposition — the crash usually needs to happen *before* you get there. The real cases:
+
+    - **Inside `LaunchedEffect`/`rememberCoroutineScope` work** (a suspend call that can throw): catch it exactly like any coroutine — `try { repo.search(query) } catch (e: Exception) { errorState = e }` inside the effect block — and store the failure as **state** (an `error` field in your `UiState`), then let the composable render that state. Don't let the exception propagate out of the effect uncaught; an uncaught exception in `LaunchedEffect` crashes the app like any other unhandled coroutine exception (see [M12 Coroutines](12-coroutines.md)).
+    - **An exception thrown directly from composition** (a bug in the composable body itself, e.g. an unguarded `list[10]` on a 3-item list) is *not* recoverable per-composable — Compose has no per-node error boundary. It propagates up like any Kotlin exception and, if uncaught, crashes the activity. Guard with normal Kotlin null-safety/bounds-checking in the body; don't rely on `try`/`catch` around UI code as a safety net.
+    - The idiomatic pattern is therefore: **push failures into state, render error state declaratively** (`is UiState.Error -> ErrorScreen(...)`), the same UDF discipline as loading/success — not ad-hoc `try`/`catch` scattered through composables.
+
 ### D.3 `DisposableEffect` — subscriptions with cleanup
 
 When you register something that must be unregistered, use `DisposableEffect`; its `onDispose` runs when the composable leaves or a key changes. Classic case: observing the `Lifecycle`.
@@ -316,6 +323,16 @@ Common families: sizing (`size`, `fillMaxWidth`, `weight` inside Row/Column), sp
     - `.clip()` before `.background()` vs after changes whether the background is clipped.
     - `.clickable()` defines the touch target at its position in the chain — put it *after* `padding` if you want the padding to be tappable, *before* if not.
 
+!!! note "Window insets modifiers"
+    Since edge-to-edge is the default (see [M37 Material](37-material.md) for the View-system side), Compose gives you inset-aware modifiers instead of a manual `OnApplyWindowInsetsListener`:
+
+    - **`Modifier.windowInsetsPadding(WindowInsets.systemBars)`** — the general form; insets content by an arbitrary `WindowInsets` value (status bar, nav bar, IME, display cutout — or a union of them).
+    - **`Modifier.systemBarsPadding()`** — shorthand for insetting by the status bar + navigation bar together; use it on a screen's root when you want content clear of both bars.
+    - **`Modifier.navigationBarsPadding()`** / **`.statusBarsPadding()`** — insets by just one bar, when a screen wants to draw *under* the status bar but stay clear of the nav bar (or vice versa) — e.g. a full-bleed header image that should still start below the status bar.
+    - **`Modifier.imePadding()`** — insets by the on-screen keyboard, so a bottom text field/send-button row isn't covered when the IME opens; typically paired with `Scaffold`'s own inset handling.
+
+    Apply these once near the root (often via `Scaffold`'s `contentWindowInsets` / `innerPadding`) rather than on every leaf composable, or you'll double-inset nested content.
+
 ### F.2 Column, Row, Box
 
 | Composable | Lays out | Main axis (Arrangement) | Cross axis (Alignment) |
@@ -342,6 +359,44 @@ Row(
 
 !!! note "These are not nested-layout-cheap the way ViewGroups are expensive"
     Compose measures each child once (single-pass, with the constraints model), so deep nesting of `Row`/`Column`/`Box` is generally fine — there is no measure/layout explosion like nested `LinearLayout`s. Use `ConstraintLayout` only when you genuinely need cross-child constraints, not for perf.
+
+### F.3 Custom layouts with `Layout`
+
+When `Row`/`Column`/`Box` can't express the arrangement you need (a flow layout that wraps to the next line, a staggered grid, a custom two-pane split), drop to the **`Layout`** composable — the same primitive `Row`/`Column`/`Box` are themselves built on. You supply a `content` slot and a **measure policy**: measure each child against incoming `Constraints`, decide your own size, then place each child at an offset.
+
+```kotlin
+@Composable
+fun FlowRow(
+    modifier: Modifier = Modifier,
+    hGap: Dp = 8.dp,
+    vGap: Dp = 8.dp,
+    content: @Composable () -> Unit,
+) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        val hGapPx = hGap.roundToPx()
+        val vGapPx = vGap.roundToPx()
+        val placeables = measurables.map { it.measure(constraints) }   // measure once, each
+
+        // Decide placement: wrap to a new row when the next item would overflow.
+        var x = 0; var y = 0; var rowHeight = 0
+        val positions = placeables.map { p ->
+            if (x + p.width > constraints.maxWidth) { x = 0; y += rowHeight + vGapPx; rowHeight = 0 }
+            val pos = x to y
+            x += p.width + hGapPx
+            rowHeight = maxOf(rowHeight, p.height)
+            pos
+        }
+
+        layout(constraints.maxWidth, y + rowHeight) {           // report final size
+            placeables.forEachIndexed { i, p -> p.placeIndexed(positions[i]) }
+        }
+    }
+}
+
+private fun Placeable.placeIndexed(pos: Pair<Int, Int>) = placeRelative(pos.first, pos.second)
+```
+
+Key rules the measure policy must follow: **measure each child at most once** (Compose enforces single-pass measurement; re-measuring throws), and `layout(width, height) { }` is where you call `placeable.placeRelative(x, y)` for every child — nothing is drawn until placement runs. For layouts that need a child's *intrinsic* size before deciding constraints for others (e.g. "size this column to the tallest sibling"), use the intrinsic-measurement APIs (`IntrinsicSize.Max`) rather than measuring twice by hand. `SubcomposeLayout` is the escape hatch when you need a *later* child's content to depend on an *earlier* child's measured size — it defers composing some children until after others are measured, at a real performance cost, so reach for `Layout` first.
 
 ---
 
@@ -425,6 +480,31 @@ NavHost(nav, startDestination = "list") {
 ```
 
 See **[M21 — Navigation Component](21-navigation.md)** for the full treatment (back stack, args, deep links, nested graphs, type-safe navigation, scoping ViewModels to a graph).
+
+### H.3 Handling the system back press (`BackHandler`)
+
+**`BackHandler(enabled = true) { }`** is the Compose-idiomatic way to intercept the system back gesture/button from inside a composable — it wraps `OnBackPressedCallback` (the same AndroidX dispatcher `Activity`/`Fragment` use) so you don't reach into `LocalOnBackPressedDispatcherOwner` by hand. It follows on/off registration the same way `DisposableEffect` does — enabled while the composable is in composition, automatically removed when it leaves.
+
+```kotlin
+@Composable
+fun ConfirmDiscardScreen(hasUnsavedChanges: Boolean, onConfirmedBack: () -> Unit) {
+    var showDialog by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = hasUnsavedChanges) {   // only intercepts while there's something to lose
+        showDialog = true                         // show a confirm dialog instead of leaving
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            confirmButton = { TextButton(onClick = onConfirmedBack) { Text("Discard") } },
+            text = { Text("Discard unsaved changes?") },
+        )
+    }
+}
+```
+
+`enabled` toggling is the key lever: when `false`, the callback steps out of the way and the *next* handler up the chain (a parent `BackHandler`, `NavController`'s own back handling, or finally the system) gets the event — so you only intercept back when you actually need to (an open bottom sheet, unsaved-changes confirmation, a custom multi-step wizard), not unconditionally. Navigation Compose's `NavHost` already installs its own back handling for popping the back stack; a screen-level `BackHandler` composes *in front of* that and takes priority while enabled, which is exactly the mechanism a confirm-before-leaving dialog relies on. For the **predictive back** gesture animation (Android 14+), the platform surfaces progress callbacks that Navigation 2.8+ and Compose's `PredictiveBackHandler` can drive a transition from — see `android:enableOnBackInvokedCallback` in [M30 Manifest](30-manifest.md).
 
 ---
 
