@@ -206,3 +206,24 @@ fun LoginRoute(vm: LoginViewModel, onNavigateHome: () -> Unit) {
     LoginScreen(state = state, onIntent = vm::onIntent)
 }
 ```
+
+---
+
+## Classic (GoF) design patterns in Android
+
+"MVVM/MVI/UDF" answer *how a screen is structured*. A different, equally common interview question is the classic Gang-of-Four catalogue — and the honest senior answer is that you already use most of these daily via the framework and don't hand-roll them:
+
+| Category | Pattern | What it solves | Android example |
+|---|---|---|---|
+| Creational | **Singleton** | Exactly one instance, globally reachable | Kotlin `object`; a shared `RetrofitClient`/`OkHttpClient` |
+| Creational | **Factory method** | Create an object without exposing/coupling to its concrete construction | `ViewModelProvider.Factory`, a companion `fun create(...)` |
+| Creational | **Builder** | Assemble a complex object step-by-step, readable at the call site | `AlertDialog.Builder`, `NotificationCompat.Builder`, OkHttp's `Request.Builder` |
+| Structural | **Adapter** | Make an incompatible interface usable by wrapping it | `RecyclerView.Adapter` (bridges your data model to the view-recycling contract) |
+| Structural | **Facade** | Hide a complex subsystem behind one simple interface | `WorkManager` (hides scheduler selection, constraints, persistence); a `Repository` hiding network+DB |
+| Structural | **Decorator** | Add behavior to an object without subclassing | Kotlin class delegation (`class B(a: A) : Foo by a`, see [Kotlin idioms](../kotlin/idioms.md)); OkHttp `Interceptor` chain |
+| Behavioral | **Observer** | Notify dependents of state changes without tight coupling | `LiveData`, `Flow`/`StateFlow` collectors, `View.OnClickListener` |
+| Behavioral | **Strategy** | Swap an algorithm/behavior at runtime behind one interface | A pluggable `Comparator`; passing a lambda as a strategy (`PriceService(discount: (Double) -> Double)`) |
+| Behavioral | **Command** | Encapsulate a request as an object you can queue/undo/log | `Runnable`/`Job` posted to a `Handler`; a `WorkRequest` |
+
+!!! note "Why this list rarely shows up as *hand-written* code"
+    On Android almost none of these are patterns you implement from scratch — they're patterns the **framework already applies for you**, and recognizing them in framework APIs is exactly the signal a senior interviewer wants: *"I don't build a `RecyclerViewAdapter` because I decided to apply the Adapter pattern; I recognize `RecyclerView.Adapter` already is one, which tells me its job is translating my data shape into the view-recycling contract, not owning view lifecycle."* Reaching for a named pattern *reflexively* (a `Singleton` for something that should be scoped/injected, a `Builder` for a 2-argument class) is the junior tell — see [DI Across Modules](../modularization/di-across-modules.md) for why DI usually beats a hand-rolled Singleton on Android specifically (testability, no static, scoped lifetime).

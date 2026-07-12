@@ -88,6 +88,26 @@ a == b      // true  — structural
 a === b     // false — different objects (b is freshly built)
 ```
 
+### `equals()` / `hashCode()` contract
+
+Every type inherits `equals()`/`hashCode()` from `Any` (default: reference identity, same as `===`). Overriding one without the other is a bug generator, because hash-based collections (`HashMap`, `HashSet`) look an object up by hash bucket *first*, then confirm with `equals()` only within that bucket.
+
+The contract, and why each direction matters:
+
+- **Equal objects must produce the same hash code.** If `a == b` but `a.hashCode() != b.hashCode()`, a `HashSet` looks in the *wrong bucket* for `b` after inserting `a` — `set.contains(b)` silently returns `false` even though `b` is "equal" to a member. This is the classic bug from a hand-rolled `equals()` without a matching `hashCode()`.
+- **Equal hash codes do *not* imply equal objects — that's a collision, and it's expected, not a bug.** Two unequal objects landing in the same bucket is normal; `HashMap`/`HashSet` handle it by chaining entries within a bucket and falling back to `equals()` to disambiguate. A good `hashCode()` just makes collisions *rare enough* to keep lookups near O(1); it can never eliminate them (pigeonhole: infinite possible objects, finite `Int` hash space).
+- **`data class` gets both for free**, generated together from the primary-constructor properties, so they're always consistent — one more reason to prefer `data class` over hand-writing `equals()`/`hashCode()`.
+
+```kotlin
+class BadPoint(val x: Int, val y: Int) {
+    override fun equals(other: Any?) = other is BadPoint && x == other.x && y == other.y
+    // hashCode() NOT overridden — still identity-based (inherited from Any)
+}
+
+val set = hashSetOf(BadPoint(1, 1))
+set.contains(BadPoint(1, 1))   // false! equal by equals(), but different hash buckets
+```
+
 ### Int boxing
 
 Kotlin has no primitive/wrapper split in *source* — `Int` is `Int`. But it compiles to JVM `int` where possible and to `java.lang.Integer` when a reference is required: nullable `Int?`, generic type arguments (`List<Int>`), and anywhere an object is needed.
@@ -399,6 +419,23 @@ val listener = object : View.OnClickListener, LifecycleObserver {
 ```
 
 Unlike a `companion object`/`object` declaration (one singleton), an object expression creates a fresh instance per evaluation.
+
+### `synchronized` — the JVM monitor lock
+
+Kotlin has no `synchronized` *keyword* (unlike Java); `synchronized(lock) { block }` is a stdlib inline function that wraps the block in the JVM's built-in **monitor lock** — the same `monitorenter`/`monitorexit` bytecode Java's `synchronized` block compiles to. Any object can serve as the lock (`this`, a dedicated `Any()` sentinel, or a class for a static-style lock); only one thread can hold a given object's monitor at a time, and other threads block until it's released — including on exception, since the unlock happens in an implicit `finally`.
+
+```kotlin
+class Counter {
+    private var count = 0
+    private val lock = Any()
+
+    fun increment() = synchronized(lock) {   // one thread inside at a time
+        count++
+    }
+}
+```
+
+It's a **coarse, blocking** primitive — cheap and simple for short, uncontended critical sections (the companion-object singleton double-checked-locking pattern above is the canonical Android example), but it's real thread blocking, not cooperative suspension. Two traps worth naming: **never call it inside a coroutine** — it blocks the underlying thread rather than suspending, defeating the point of using coroutines at all (reach for a `Mutex` with `withLock { }` instead, which *suspends*); and **never lock on a mutable or reused object** (`synchronized(this)` in a class other code also synchronizes on, or a boxed value) — you can end up synchronizing on different objects than you think, silently losing the mutual exclusion.
 
 ---
 
