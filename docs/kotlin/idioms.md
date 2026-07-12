@@ -375,6 +375,19 @@ class IntBag(val items: List<Int>) {
 !!! warning
     `compareTo` powering `<`/`>` should be *consistent with* `equals` or you'll get subtle bugs in sorted collections. Overload operators only where the symbol's meaning is unambiguous (`Vec + Vec` = good; `User + User` = mystery).
 
+### `infix` functions
+
+An `infix fun` with exactly one parameter (no vararg, no default value, and a receiver) can be called *without* the dot or parentheses: `a infixName b` instead of `a.infixName(b)`. It's purely a call-site readability convention — resolution and dispatch are identical to a normal member/extension function; nothing about performance or inlining changes.
+
+```kotlin
+infix fun Context.hasPermission(permission: String): Boolean =
+    ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+if (context hasPermission Manifest.permission.CAMERA) { /* ... */ }   // reads like English
+```
+
+The standard library's own infix functions are the ones you already use daily: `1 to "one"` (`to`, building a `Pair`), `1 until 10` and `10 downTo 1` (range builders), `x and y` / `x or y` / `x shl n` (bitwise ops on `Int`/`Long`). Reserve `infix` for genuinely binary, side-effect-free operations that read naturally as a sentence (`a to b`, `x hasPermission y`) — forcing it onto multi-step or stateful calls just obscures what's actually happening at the call site.
+
 ---
 
 ## Destructuring
@@ -401,6 +414,28 @@ val (_, second) = pair                          // skip with underscore
     ```
 
     Guidance: don't destructure data classes with 3+ same-typed fields across module boundaries; access by property name. This is why adding a property in the *middle* of a data class is a breaking change for destructuring callers.
+
+---
+
+## Type aliases
+
+`typealias` gives an existing type a second name. It creates **zero** new type — no runtime representation, no allocation, and no type-safety: `GroupedContacts` and `Map<String, List<ContactModel>>` are *interchangeable* everywhere, and the compiler will happily accept one where the other is expected. This is the key thing that distinguishes it from a `value class`, which *does* create a distinct type the compiler enforces (see [Kotlin fundamentals](fundamentals.md) on `@JvmInline value class`) — reach for `typealias` purely for readability, and `value class` when you need the compiler to stop you from passing the wrong thing.
+
+```kotlin
+typealias GroupedContacts = Map<String, List<ContactModel>>
+typealias OnItemClick = (item: Item, position: Int) -> Unit   // names a function type
+
+fun group(contacts: List<ContactModel>): GroupedContacts =
+    contacts.groupBy { it.displayName.first().toString() }
+
+// Interchangeable — the compiler sees the underlying type, not the alias:
+val direct: Map<String, List<ContactModel>> = group(contacts)   // compiles fine
+```
+
+The two places it earns its keep: **long generic signatures** that recur across a codebase (`Map<String, List<ContactModel>>` repeated in five function signatures reads better as one name), and **naming a function type** so a callback parameter reads like a role (`onItemClick: OnItemClick` instead of `onItemClick: (Item, Int) -> Unit`) — this is the same idea `fun interface` covers for Java-facing SAM callbacks, but lighter weight for pure-Kotlin code.
+
+!!! warning "Don't reach for it as a pseudo-type"
+    Because a `typealias` isn't a real type, it buys **zero** compile-time safety — `typealias UserId = String` still lets you pass any `String` where a `UserId` is expected, silently. If the goal is preventing mix-ups between domain concepts (`UserId` vs `OrderId`, both backed by `String`), use a `value class`, not a `typealias`; only use `typealias` for pure readability on types you're *not* trying to distinguish from their underlying representation.
 
 ---
 

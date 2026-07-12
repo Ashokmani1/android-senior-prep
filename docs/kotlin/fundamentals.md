@@ -108,6 +108,30 @@ val set = hashSetOf(BadPoint(1, 1))
 set.contains(BadPoint(1, 1))   // false! equal by equals(), but different hash buckets
 ```
 
+### Stack vs heap — the model boxing plugs into
+
+Kotlin inherits the JVM's two memory regions, and it's worth having the model explicit before boxing (below) makes sense as anything other than a rule to memorize.
+
+- **Stack** — one per thread, holds local variables and method call frames (LIFO: a frame is pushed on call, popped on return). It stores **primitive values directly** (`Int`, `Boolean`, etc. as raw bits) and **object references** (a pointer, not the object). Allocation/deallocation is just moving a stack pointer — extremely cheap, and fully automatic: a frame's memory is reclaimed the instant the function returns, no garbage collector involved.
+- **Heap** — shared across all threads, holds every actual object (instances of classes, arrays, boxed primitives). Heap objects are **not** freed on scope exit; they live until nothing references them, at which point the **garbage collector** reclaims them (see [M27 Memory](../deep-dive/27-memory.md) for GC internals) — inherently slower and less predictable than a stack pop.
+
+```kotlin
+fun calculate(): Int {
+    val a = 5              // raw int value, lives in this frame on the stack
+    val b = 10              // same
+    return a + b             // frame (a, b) popped on return — nothing to collect
+}
+
+class Person(val name: String)
+fun createPerson(): Person {
+    val person = Person("Alice")   // the Person OBJECT is allocated on the heap;
+    return person                    // `person` itself is just a reference, on the stack
+}                                     // the reference goes away here — the heap object doesn't,
+                                      // it survives as long as `main`'s reference to it does
+```
+
+A **local `val`/`var` holding a primitive never touches the heap** — that's the fast path. A **local variable holding a class instance is a stack-resident pointer to a heap-resident object** — two different lifetimes, easy to conflate. This is exactly the distinction boxing is about to complicate.
+
 ### Int boxing
 
 Kotlin has no primitive/wrapper split in *source* — `Int` is `Int`. But it compiles to JVM `int` where possible and to `java.lang.Integer` when a reference is required: nullable `Int?`, generic type arguments (`List<Int>`), and anywhere an object is needed.
