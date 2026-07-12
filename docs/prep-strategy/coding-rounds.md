@@ -412,6 +412,46 @@ O(n) time, O(1) space, single pass — the reason it beats "count zeros/ones/two
 (also O(n) but two passes) is that it's the answer the interviewer actually wants when they say
 "can you do it in one pass."
 
+### Remove duplicates from an array in Kotlin
+
+**The ask:** Remove duplicate values from a given array in Kotlin while keeping the original order.
+
+```kotlin
+fun <T> Array<T>.removeDuplicates(): Array<T> {
+    return this.distinct().toTypedArray()
+}
+
+// Or manual Set-based approach for primitive arrays:
+fun IntArray.removeDuplicates(): IntArray {
+    val seen = LinkedHashSet<Int>()
+    for (num in this) {
+        seen.add(num)
+    }
+    return seen.toIntArray()
+}
+```
+
+*Complexity:* O(n) time complexity and O(n) space complexity. Using `distinct()` or `LinkedHashSet` retains the insertion order.
+
+### Write a function (Higher-Order Function) that returns a function
+
+**The ask:** Write a higher-order function that generates and returns another function, illustrating closures.
+
+```kotlin
+fun multiplier(factor: Int): (Int) -> Int {
+    return { number -> number * factor } // returns a function enclosing 'factor'
+}
+
+fun main() {
+    val double = multiplier(2)
+    val triple = multiplier(3)
+    println(double(5)) // prints 10
+    println(triple(5)) // prints 15
+}
+```
+
+*Interview angle:* This demonstrates **closures** in Kotlin. The returned lambda captures the parameter `factor` from its enclosing scope and retains it even after `multiplier` completes execution.
+
 ---
 
 ## Disk-based cache constraints

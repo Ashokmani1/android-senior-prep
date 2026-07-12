@@ -819,3 +819,26 @@ rv.adapter = concat
     specifically?* Predictive layout needs to pair pre-change and post-change
     holder positions; `notifyDataSetChanged` invalidates all holders so no pairing
     exists, and RV skips the predictive pass entirely.
+
+!!! question "7. What is the purpose of `RecyclerView.setHasFixedSize(true)`?"
+    **Answer:** It tells the RecyclerView that adapter content changes (insertions, removals, updates) **will not change the width or height of the RecyclerView itself**. Under the hood, this allows the RecyclerView to skip a full parent `requestLayout()` (re-measuring the entire RV and potentially its parent hierarchy) whenever a granular change notification occurs. Instead, it only measures and updates the affected child item views. You should set this whenever the RecyclerView's dimensions are fixed (`match_parent` or a fixed `dp` size); do not set it if it is `wrap_content`.
+    **Follow-up:** *What happens if you set it to true on a `wrap_content` RecyclerView?* If the number of items changes (e.g., from 1 to 5), the RecyclerView will not resize its own container to fit the new items because it skips the measure step, leading to clipped or incorrectly laid out content.
+
+!!! question "8. ListView vs. RecyclerView — how does RecyclerView improve performance over ListView?"
+    **Answer:** `RecyclerView` is a highly flexible successor to `ListView` designed to decouple concerns and optimize recycling:
+    
+    1.  **Mandatory ViewHolder Pattern**: In `ListView`, the ViewHolder pattern was optional (developers could call `findViewById` on every bind, causing lag). In `RecyclerView`, the `ViewHolder` class is built-in and mandatory.
+    2.  **Decoupled LayoutManager**: `ListView` was strictly vertical. `RecyclerView` delegates layout to a `LayoutManager`, allowing vertical, horizontal, grid, staggered grids, or custom layout flows without rewriting the adapter.
+    3.  **Decoupled ItemAnimator**: `RecyclerView` handles items entering, moving, and leaving via `ItemAnimator` animations. `ListView` had no native animation support.
+    4.  **Granular Change Notifications**: `ListView` only had `notifyDataSetChanged()`, forcing a complete layout of all visible views. `RecyclerView` allows granular updates (`notifyItemInserted`, `notifyItemMoved`, etc.), supporting predictive item animations.
+    5.  **Multi-Tiered Recycling Pool**: `RecyclerView` uses a multi-tier cache (scrap, cached views, shared recycled view pools) that can be shared across multiple lists, minimizing object instantiation compared to ListView's simple `RecycleBin`.
+    **Follow-up:** *How does `RecyclerView` recycle views across different horizontal lists?* By setting a shared `RecycledViewPool` instance on all the horizontal lists. Holders created in one row's pool can be bound and rendered in another row's list without re-inflating.
+
+!!! question "9. What is SnapHelper and when would you use it?"
+    **Answer:** `SnapHelper` is a helper class that intercepts scroll flings on a `RecyclerView` and snaps the list to a specific alignment (like centering an item or aligning it to the start edge) once the scroll settles. It computes the distance needed to align the target view and calls `smoothScrollBy()` to animate it into place.
+    
+    Common subclasses include:
+    *   `LinearSnapHelper`: Snaps the target view's center to the center of the RecyclerView.
+    *   `PagerSnapHelper`: Behaves like a ViewPager (snaps one full page at a time).
+    **Follow-up:** *How does it know which view to snap to?* It overrides `findSnapView()` to check the layout positions of all visible children relative to the center/start of the parent, picking the one closest to the snap target.
+

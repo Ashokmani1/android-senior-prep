@@ -335,3 +335,64 @@ It exposes a Kotlin object to page JavaScript; if the page is untrusted, served 
 **Q6. A release build crashes with an unreadable stack trace like `a.b.c(:0)`. Explain and fix.**
 R8 obfuscated the class/method names in the minified release. Each build emits a unique `mapping.txt` mapping obfuscated → original symbols; run `retrace mapping.txt trace.txt` to deobfuscate, or let Crashlytics symbolicate automatically from the uploaded mapping. If the mapping wasn't archived/uploaded, that build's crashes are permanently unreadable — so upload it every release.
 *Follow-up:* How do you capture a crash you can't reproduce? → Install a `Thread.setDefaultUncaughtExceptionHandler` breadcrumb (delegating to the previous handler) and/or use Crashlytics with `recordException` for non-fatals; see [38-firebase.md](38-firebase.md).
+
+**Q7. What is the Android Support Library, why was it introduced, and what is its relation to AndroidX?**
+It was introduced to let newer APIs (like Fragments or Material design) run on older Android versions (backwards compatibility) without requiring OS updates, and to act as an abstraction layer for device fragmentation. It was packaged under `android.support.*`. Over time, version mismatching (e.g. `support-v4` vs `support-v7` versioning) and class name clashes became unmaintainable. In 2018, Google introduced **AndroidX**, which is a clean namespace rewrite (`androidx.*`), separate versioning per artifact, semantic versioning, and is now the official home for Jetpack libraries.
+*Follow-up:* What is `Jetifier`? → A build tool that automatically rewrites third-party libraries using legacy support imports to use AndroidX imports during Gradle build time.
+
+**Q8. What is RenderScript, and why has it been deprecated?**
+RenderScript was a framework for running computationally intensive tasks (like image processing, computer vision, math) with high performance on the device's CPU or GPU. It compiled scripts at runtime to machine code. It was deprecated because it required complex runtime libraries, struggled to optimize evenly across various GPU architectures, and modern cross-platform graphics frameworks like **Vulkan** and **OpenGL ES** (and GPU compute shaders) along with Android's Neural Networks API (NNAPI) provide superior, native hardware acceleration.
+*Follow-up:* What is the modern replacement for image processing scripts? → Vulkan compute shaders, or using standard CPU libraries optimized with C++ NDK/NEON instructions.
+
+**Q9. Explain the SMS Retriever API and how it differs from reading SMS directly.**
+The SMS Retriever API allows an app to automatically retrieve verification codes (OTPs) sent via SMS without requiring the user to grant the dangerous `RECEIVE_SMS` or `READ_SMS` runtime permissions. The SMS sender appends a specific 11-character hash string derived from the app's signing certificate at the end of the text. When the SMS arrives, Google Play Services detects the hash, retrieves the SMS content, and routes it directly to your app via a Broadcast Intent.
+*Follow-up:* What is the user experience win? → Frictionless auto-verification without showing intrusive permission prompts that might alarm privacy-conscious users.
+
+**Q10. How do you obtain accurate time in Android, and why is `System.currentTimeMillis()` unreliable for duration measurement?**
+`System.currentTimeMillis()` (wall-clock time) is set by the system clock and can change abruptly if the user changes their settings, or if the network performs a time sync (NTP update). Measuring elapsed time with it can result in negative or wildly incorrect values. For accurate intervals, use **`SystemClock.elapsedRealtime()`**, which measures milliseconds since the device was booted (including deep sleep) and is monotonically increasing.
+*Follow-up:* What if you want to skip time spent in deep sleep? → Use `SystemClock.uptimeMillis()`, which stops counting when the CPU goes into deep sleep.
+
+**Q11. What are the key patterns and classes in AOSP (Android Open Source Project) that implement standard design patterns?**
+AOSP is built on standard OOP design patterns:
+1.  **Proxy Pattern**: Binder IPC utilizes a client-side proxy (e.g., `IActivityManager`) interfacing with `system_server`'s stub.
+2.  **Service Locator Pattern**: `ServiceManager` (via `context.getSystemService()`) stores and resolves handles to system services (AMS, PMS, WMS).
+3.  **Composite Pattern**: The `View` and `ViewGroup` classes form a tree structure where actions (measure, layout, draw) cascade down composites.
+4.  **Observer Pattern**: `BroadcastReceiver` and `ContentObserver` register to receive system events or database changes.
+5.  **Factory Pattern**: `LayoutInflater` resolves layout resource XML tags into View instances dynamically.
+*Follow-up:* What pattern does `Context` itself represent? → The Context acts as a **Facade** (giving access to system resources, themes, assets, and storage) and also acts as a **God Object** wrapper around the private `ContextImpl` implementation.
+
+**Q12. What are the different types of threads in an Android application, and how do they differ?**
+**Answer:** Android applications use several types of threads, each managed differently by the runtime:
+1.  **Main/UI Thread**: Automatically spawned when the process starts. It runs the primary `Looper`, handles lifecycle callbacks, processes input events, and drives view layout/draw passes. Only the main thread is allowed to touch UI elements.
+2.  **Worker/Background Threads**: Programmatically created threads (e.g., via `Thread`, `ThreadPoolExecutor`, or Coroutines using `Dispatchers.IO`/`Default`) that run blocking operations like database queries, network calls, and CPU-intensive parsing off the main thread.
+3.  **HandlerThread**: A standard Java `Thread` subclass with a built-in, pre-configured `Looper` and `MessageQueue` prepared during startup. It is ideal for serializing a queue of background tasks (executing them sequentially on a single background thread).
+4.  **RenderThread**: An internal platform thread introduced in Android 5.0. It receives canvas draw commands from the UI thread and uploads them to the GPU. Because it runs independently of the main thread, it keeps hardware-accelerated animations (like ripples and transitions) running smoothly even if the UI thread is temporarily blocked.
+**Follow-up:** *What is the difference between a standard `Thread` and a `HandlerThread`?* — A standard Java thread exits its execution context as soon as its `run()` method finishes. A `HandlerThread` runs a continuous message loop (`Looper.loop()`) inside `run()`, keeping the thread alive and waiting for incoming tasks in its queue until you explicitly call `quit()` or `quitSafely()`.
+
+**Q13. How do Thread, Handler, and Looper relate to and communicate with each other?**
+**Answer:** They coordinate to implement a **thread-bound message loop**:
+*   **Thread**: The operating system's execution context.
+*   **Looper**: Associated with exactly one thread via `ThreadLocal`. It runs `Looper.loop()`, which pulls messages sequentially from the thread's `MessageQueue`.
+*   **Handler**: Bound to a specific thread's `Looper`. It acts as the API interface: background threads use the Handler to post `Runnable`s or send `Message`s *into* the target thread's `MessageQueue`. The `Looper` eventually pulls the message and dispatches it back to the Handler (`handler.dispatchMessage()`) to execute on the target thread.
+*   *Cardinality:* A Thread has at most **one** Looper. A Looper has exactly **one** MessageQueue. Multiple Handlers can attach to the **same** Looper (allowing different components to enqueue tasks to the same thread).
+**Follow-up:** *Can you instantiate a `Handler` on a standard background thread?* — Only if you call `Looper.prepare()` on that thread first to set up its message loop; otherwise, the Handler constructor throws a `RuntimeException("Can't create handler inside thread that has not called Looper.prepare()")`.
+
+**Q14. UI Thread vs. Background Thread: What are the golden rules, and what happens if you violate them?**
+**Answer:** The Android platform enforces two concurrency invariants to maintain performance and consistency:
+1.  **Do not block the UI Thread**: Performing long-running tasks on the main thread halts `Looper.loop()`, preventing the processing of input events and layout draws.
+2.  **Do not touch views from background threads**: The UI toolkit (`android.view.View`) is **not thread-safe**. Concurrently mutating view properties from other threads causes race conditions and memory corruption.
+*   *Violations:* 
+    *   Running a network call on the main thread immediately throws a **`NetworkOnMainThreadException`** (on Honeycomb+).
+    *   Mutating a view from a background thread triggers a **`CalledFromWrongThreadException`** (`"Only the original thread that created a view hierarchy can touch its views."`), thrown by the root `ViewRootImpl.checkThread()`.
+**Follow-up:** *How does a background thread safely update a View?* — It must marshal the operation back to the main thread's message queue using `activity.runOnUiThread { }`, `view.post { }`, `handler.post { }`, or by collecting flows inside a coroutine launched on `Dispatchers.Main`.
+
+**Q15. How do you detect and diagnose when a process is blocking the UI thread?**
+**Answer:** You can detect main thread blockages using debug alerts, logs, profile charts, and dumps:
+1.  **Choreographer Skipped Frames Warning**: Look in Logcat for: `I/Choreographer: Skipped 30 frames! The application may be doing too much work on its main thread.` This means message processing took longer than the frame budget (16.6 ms for 60Hz), dropping frames.
+2.  **StrictMode**: Enable it in debug builds (`StrictMode.setThreadPolicy(Builder().detectAll().penaltyLog().build())`) to catch and log disk reads/writes or network calls running on the main thread.
+3.  **CPU Profiler Call Charts**: Record a trace in Android Studio's Profiler during interactions. A blocked UI thread shows up as wide, long-running method bars on the `main` thread line, listing the exact blocked stack trace.
+4.  **ANR (Application Not Responding) Logs**: If the main thread fails to process input events or broadcast receivers within **5 seconds**, the OS displays an ANR dialog and writes a thread dump to `/data/anr/traces.txt` (or `/data/anr/anr_*`). Inspecting this file reveals the exact call stack where the `main` thread was suspended.
+5.  **BlockCanary**: An integration library that tracks execution times in `Looper.loop()`'s logging hooks, automatically logging a stack trace whenever a single message dispatch exceeds a set threshold (e.g., 200 ms).
+**Follow-up:** *Why does the OS allow exactly 5 seconds for ANRs?* — To give the main thread a reasonable window to recover from transient blocking tasks (like a slow binder transaction or garbage collection pause) while ensuring the app does not appear frozen to the user indefinitely.
+
+

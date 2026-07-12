@@ -602,3 +602,8 @@ Each state needs different data (`Success` a list, `Error` a message+cause, `Loa
 **8. When do you reach for an abstract class instead of an interface, given Kotlin interfaces already support default methods?**
 The moment you need constructor-time invariants, `protected` members, or real stored state shared by subclasses — none of which an interface can hold. If it's purely a capability multiple unrelated types can satisfy with no shared state, an interface is more flexible: multiple inheritance, and it can be layered onto an existing class hierarchy.
 *Follow-up:* Can a class implement an interface and extend an abstract class at once? — Yes: single abstract-class inheritance plus any number of interfaces; the diamond-resolution rule (`super<T>`) still applies if both provide a default for the same member.
+
+**9. What is the difference between `open` and `public` in Kotlin?**
+`public` is a **visibility modifier** (the default in Kotlin) that controls *who can see* the declaration (visible anywhere). `open` is an **inheritance modifier** that controls *who can subclass/override* it (classes and members are `final` by default in Kotlin, unlike Java). A class must be `open` to be subclassed, and a method/property must be `open` to be overridden.
+*Follow-up:* Can a `private` method be `open`? — No. An `open` method must be overridable, which requires it to be visible to subclass scopes (meaning it must be `protected`, `internal`, or `public`).
+

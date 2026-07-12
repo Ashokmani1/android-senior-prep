@@ -79,7 +79,60 @@ Twelve mobile system design prompts with rapid model outlines. For each: **how t
 - **Tradeoffs:** CRDT (convergent, no central authority, heavier state) vs OT (needs server transform, lighter payload); op granularity (character vs block); presence cost.
 - **Red flag:** Proposes last-write-wins for concurrent text editing (data loss / clobbered paragraphs); no offline op buffering; assumes always-connected; ignores reconnect replay ordering.
 
+## 13. Design a file downloader library
+
+- **Approach:** Clarify — large file downloads, pause/resume, concurrency, priority queue, background downloading. Model — download tasks in Room (URL, local path, status: ENQUEUED/DOWNLOADING/PAUSED/COMPLETED/FAILED, progress bytes, checksum). Concurrency — ThreadPoolExecutor with bounds (max 3 concurrent downloads). Resume — use HTTP `Range: bytes=X-` header; download file to a temporary file (`.tmp`) and append bytes, rename to final path only on completion and checksum verify. Queue — priority queue sorted by user priority + queue time. WorkManager for background execution.
+- **Tradeoffs:** Multi-connection chunked downloading (faster speed but higher socket/server overhead and tricky segment merging) vs single-connection resume (slower but robust and simple); database syncing frequency for progress (real-time slows UI; throttle progress updates to once per 500 ms).
+- **Red flag:** Memory-buffers the entire file (causes OOM); starts from byte 0 on every connection drop; no connection limits (spawns 50 threads and crashes the app); blocks the UI thread.
+
+## 14. Design Instagram Stories (mobile client)
+
+- **Approach:** Clarify — 24h lifetime, multi-segmented slides (images/videos), low latency transition, viewing state sync. Cache — segmented LRU disk cache; prefetch metadata (JSON lists of story URLs) and proactively download the next 1-2 slides ahead of the current active story. Player — ExoPlayer instances pooled (2-3 instances) for instant video play; images loaded via a memory-cached pipeline. Sync — send view events (story ID, timestamp) to server via an optimistic batch queue (similar to analytics SDK).
+- **Tradeoffs:** Video prefetching depth (too deep wastes network/battery if user exits early; too shallow causes buffering spinner); pre-rendering next slides vs memory consumption.
+- **Red flag:** Loads and initializes a fresh Player per slide (causes jank/1-second lag during slide transitions); does not prefetch media; downloads stories on metered data without constraints.
+
+## 15. Design a location-based "Nearby Friends" app
+
+- **Approach:** Clarify — real-time updates, geofencing, battery efficiency, scalability. Client — periodic location updates using `FusedLocationProviderClient` with a dynamic interval (slower when stationary via accelerometer/activity recognition, faster when moving). Spatial indexing — geohashing (e.g. 6-character Geohash, ~1.2km precision) to represent user location. Networking — upload Geohash to server, query server for matching geohashes of active friends. Map rendering — cluster points locally to avoid layout overload.
+- **Tradeoffs:** Location accuracy vs battery (GPS vs network triangulation); polling intervals vs WebSockets for real-time friend movements; client-side vs server-side distance calculation.
+- **Red flag:** Continuously queries GPS at maximum frequency (battery dies in 2 hours); uploads precise GPS coordinates to the server every second (privacy leak and network overhead); uses O(N) distance checks for thousands of users on the client.
+
+## 16. Design a client-side logging library
+
+- **Approach:** Clarify — high throughput, minimal overhead, persistence, remote upload, secure. API — `Log.d`, `Log.e` routing. Persistence — enqueues logs to an in-memory ring buffer, flushed asynchronously in batches to a file using `BufferedWriter` on a single background worker thread to prevent disk write contention. Rotation — split files when they exceed size limit (e.g. 5 MB) or age (e.g. 24h), keeping a max of 5 files. Security — encrypt log contents on the fly using AES-GCM (key stored in Android Keystore). Upload — compress logs (GZIP) and upload via WorkManager during Wi-Fi + charging.
+- **Tradeoffs:** SQLite DB (structured queryable logs but high write/CPU overhead) vs flat files (fast append, low overhead but harder to query); instant file syncing (no data loss but high disk wear) vs buffered flush.
+- **Red flag:** Synchronous file writing on the logging thread (causes UI frames to drop on the main thread); unbounded file growth (fills up device storage); writes sensitive customer data in plaintext.
+
+## 17. Real-time updates: HTTP Polling vs. Long-Polling vs. WebSockets vs. Server-Sent Events (SSE)
+
+- **Approach:** Clarify the protocol characteristics for mobile:
+    *   **Short Polling**: Client periodically sends HTTP requests. *Characteristics*: High battery and network overhead due to constant TCP handshakes/HTTP headers. *Use Case*: Low-frequency updates where delay is acceptable.
+    *   **Long Polling**: Client sends request, server holds it open until new data is available. *Characteristics*: Reduces latency, but connection drops require constant reconnection overhead.
+    *   **WebSockets**: Bi-directional, full-duplex TCP persistent connection. *Characteristics*: Lowest latency, low overhead, but requires keeping a TCP socket open (drains battery) and custom reconnect/heartbeat logic.
+    *   **SSE**: Mono-directional (server-to-client) persistent HTTP connection. *Characteristics*: Reuses standard HTTP/2, auto-reconnects, but is read-only.
+- **Tradeoffs:** WebSockets (great for chat, bi-directional, high battery footprint) vs SSE (great for live tickers/stocks, mono-directional, standard HTTP compatibility); WebSocket background battery drain vs FCM push notifications (wake radio only on data).
+- **Red flag:** Leaves a WebSocket connection open continuously when the app is in the background (Google Play console battery warning); does not implement heartbeats/pings to detect silent connection drops.
+
+## 18. How Voice & Video Calling works (WebRTC on Mobile)
+
+- **Approach:** Clarify WebRTC architecture for mobile:
+    *   **Signaling**: App exchanges SDP (Session Description Protocol) offer/answer and ICE candidates (IPs/ports) via a signaling channel (e.g. WebSocket or FCM push).
+    *   **NAT Traversal**: Uses **STUN** (queries public IP/port) or **TURN** (relays media stream if direct peer-to-peer connection fails due to symmetric NAT).
+    *   **Media Pipeline**: `AudioRecord` + `Camera2` capture raw frames → encoded via hardware codecs (H.264/VP8, Opus) → packetized and transmitted via RTP/SRTP over UDP.
+    *   **State**: Exposes state updates (CONNECTING→CONNECTED→DISCONNECTED→FAILED).
+- **Tradeoffs:** Peer-to-peer (no server media cost, low latency, but leaks client IP) vs SFU/MCU media servers (server-routed, scales to group calls, shields IPs, but high server cost).
+- **Red flag:** Uses TCP for video/audio transmission (causes massive latency and lag due to head-of-line blocking); does not implement a TURN fallback (calls fail on most mobile carrier networks).
+
+## 19. How "Where Is My Train" tracks train location without Internet
+
+- **Approach:** Clarify off-grid tracking mechanisms:
+    *   **Cell Tower Triangulation**: The app queries the telephony API (`TelephonyManager.getAllCellInfo()`) for the current Cell Tower ID (MCC, MNC, LAC, CID). It queries an **offline SQL database** packaged inside the APK containing the GPS coordinates of all railway-line cell towers.
+    *   **GPS Satellites**: The mobile GPS receiver decodes signals from GPS satellites directly (requires no cellular network or internet) to obtain coordinates.
+    *   **Offline Schedule Reconciliation**: Matches coordinates and speed against an offline timetable database (GTFS-like) to extrapolate the current station and delays.
+- **Tradeoffs:** Cell ID tracking (extremely low battery, works deep inside the train compartment, but lower accuracy) vs GPS (high accuracy, but high battery drain and fails inside metallic train roofs).
+- **Red flag:** Assumes location lookup requires a network geocoding API; queries GPS continuously at max frequency (burns battery); fails to package the location/cell databases offline.
+
 ---
 
-!!! quote "The pattern across all twelve"
+!!! quote "The pattern across all nineteen"
     Every strong answer does the same four things: **clarifies offline/realtime/scale first**, makes the **local DB the single source of truth**, uses **cursors and optimistic writes with a sync queue**, and **closes on failure modes** (network loss mid-write, process death, cancellation). Every weak answer forgets offline, forgets cancellation, or designs only the happy path.

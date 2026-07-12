@@ -513,3 +513,14 @@ downloads a foreign locale's strings or an unused CPU architecture's native libs
     it and that version's crashes are permanently opaque. **Follow-up:** *Downside of
     dynamic features?* Added complexity (install-time availability, testing on-demand
     modules, `SplitCompat`), so reserve them for genuinely large, seldom-used features.
+
+!!! question "7. Why might an app's startup time increase over time even if its code has not changed?"
+    **Answer:** If the app binary is unchanged but performance degrades on user devices over time, look for these four runtime causes:
+    
+    1.  **AOT Profile Eviction / Compilation Decay:** When the app is updated, or when the system clears local profiles (e.g., after partition cache clears or system updates), the pre-compiled AOT machine code is discarded. Until the device runs background optimization (`dex2oat`) again (which requires the phone to be charging, idle, and connected to Wi-Fi), the app reverts to slow interpretation/JIT compile modes, causing a temporary cold-start slowdown.
+    2.  **Database Scale & Fragmentation:** Over time, databases (Room/SQLite) accumulate rows. Queries that ran in 5 ms on a clean install might take 100 ms once tables scale to thousands of rows, especially if queries lack indexes, trigger table scans, or if the database suffers from write-ahead log (WAL) bloat.
+    3.  **Shared Preferences / Data Store Bloat:** If the app stores large objects (like serializing large JSON configs) inside Shared Preferences or Datastore, these files must be parsed during startup. Because SharedPreferences loads its entire XML file into memory synchronously on initialization, file growth directly increases startup latency.
+    4.  **Background Process Contention:** Over time, as a user installs more applications, the device's resident background processes increase. This places overall memory pressure on the Low Memory Killer (LMK) and triggers frequent Garbage Collection (GC) pauses during launch, slowing CPU scheduling.
+    
+    **Follow-up:** *How do you mitigate database and preference bloat on startup?* — Never access databases or parse large files on the main thread during launch. Keep `SharedPreferences` small, use `DataStore` for asynchronous reads, index Room query keys, and periodically run the SQLite `VACUUM` command to defragment the disk.
+

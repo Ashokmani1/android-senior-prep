@@ -574,3 +574,16 @@ class Api {
     **Answer.** `require`/`requireNotNull` validate **arguments** and throw `IllegalArgumentException` — the *caller* violated the contract. `check`/`checkNotNull` validate **internal state/invariants** and throw `IllegalStateException` — *we* called things in the wrong order. `!!` is a blunt "I assert non-null" that throws a generic `NullPointerException` with no context. Prefer `requireNotNull`/`checkNotNull` because they carry a message and express whose bug it is; reserve `!!` for cases the type system genuinely can't see and you've reasoned about.
 
     *Follow-up: "Why do these take a lambda for the message?"* — The message lambda is only invoked on failure, so you don't pay string-concatenation cost on the happy path — same reason `lazy` and logging APIs take lambdas.
+
+!!! question "Q7 — What is infix notation in Kotlin and when is it appropriate to use?"
+    **Answer.** Infix notation allows calling a member or extension function with a single receiver and single argument without using dots and parentheses (e.g. `map.put(key, value)` vs `key to value`). To mark a function `infix`, it must be a member or extension function, have exactly one parameter, and that parameter must not have a default value or be vararg.
+    *Follow-up: "When is it appropriate?"* — Use it only for domain-specific languages (DSLs), mathematical/logical operations (e.g. `10 shl 2`, `a and b`), or highly cohesive pair-like operations (e.g. `to`, `until`). Overusing it for ordinary methods (`user save database`) degrades readability and confuses standard language ergonomics.
+
+!!! question "Q8 — What does `partition` do in Kotlin collections and how does it differ from `filter`?"
+    **Answer.** `partition` evaluates a predicate on a collection and returns a `Pair` of lists: the first list contains elements that matched the predicate (equivalent to `filter`), and the second contains elements that did *not* match (equivalent to `filterNot`). It processes the collection in a **single pass**, avoiding the double iteration required if you ran `filter` and `filterNot` separately.
+    *Follow-up: "What is its return type?"* — It returns `Pair<List<T>, List<T>>`. You can destructure it directly: `val (adults, minors) = users.partition { it.age >= 18 }`.
+
+!!! question "Q9 — What are Labels in Kotlin and how do they resolve nested loop/lambda exit ambiguity?"
+    **Answer.** Labels (written as `labelName@`) are target tags in Kotlin used to qualify returns and jumps. In nested loops, a label lets a `break` or `continue` jump to an outer loop instead of the innermost one. In lambdas, a `return` by default exits the *enclosing named function* (if the lambda is inline) or is forbidden (if the lambda is non-inline). Using a label (either explicit like `loop@` or implicit matching the function name) makes the return **local to the lambda**, continuing to the next iteration of the lambda consumer (acting like a `continue` in a standard loop).
+    *Follow-up: "What does `run loop@{ ... }` do?"* — It creates a block where a return to `@loop` exits that specific block early and continues with the rest of the function, acting like a local `break`.
+

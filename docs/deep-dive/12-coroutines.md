@@ -648,3 +648,39 @@ Cancellation is cooperative — it only takes effect at suspension points or exp
 **6. Contrast exception behavior of `launch` and `async`.**
 `launch` treats a thrown exception as immediately uncaught: it propagates to the parent and ultimately the `CoroutineExceptionHandler` (or crashes). `async` **captures** the exception in its `Deferred` and rethrows it at `await()` — so you catch it around `await`, not at throw time. Caveat: under a regular `Job`, an `async` failure also cancels the parent (structured concurrency) even before you await; under a `SupervisorJob` or a root/`GlobalScope` async it's held until `await` and lost if never awaited.
 *Follow-up:* How do you run two calls concurrently and handle either failing? — Wrap in `coroutineScope { }`, `async` both, and `await()` inside a try/catch. If one throws, `coroutineScope` cancels the other and rethrows out of the block — a single, structured failure path.
+
+**7. How do you implement a `debounce` operator using Coroutines?**
+A `debounce` operator delays the emission of a value until a specified quiet period (e.g. 300 ms) has elapsed without any new values. Using raw coroutines, you can implement it by cancelling and restarting a delay job on each emission:
+```kotlin
+fun <T> Flow<T>.debounce(waitMs: Long): Flow<T> = channelFlow {
+    var searchJob: Job? = null
+    collect { value ->
+        searchJob?.cancel() // cancel the previous delayed emission
+        searchJob = launch {
+            delay(waitMs)
+            send(value) // emit only if waitMs passes without cancellation
+        }
+    }
+}
+```
+*Follow-up:* What's the difference between this manual implementation and the built-in `Flow.debounce`? — Under the hood, `Flow.debounce` is highly optimized and uses `select { }` with a timer clause (`onTimeout`) rather than spawning a new child coroutine job per element, reducing allocation overhead.
+
+**8. Write a Kotlin code snippet demonstrating how to run two coroutines in series and parallel.**
+To run two operations in **series** (sequentially), call their suspending functions in sequence within a coroutine:
+```kotlin
+suspend fun loadSequentially(): Result = coroutineScope {
+    val resultA = makeNetworkCallA()         // suspends until A is done
+    val resultB = makeNetworkCallB(resultA)  // suspends until B is done
+    Result(resultA, resultB)
+}
+```
+To run them in **parallel** (concurrently), use the `async` builder and await their results together:
+```kotlin
+suspend fun loadConcurrently(): Result = coroutineScope {
+    val deferredA = async { makeNetworkCallA() } // starts A immediately
+    val deferredB = async { makeNetworkCallB() } // starts B immediately
+    Result(deferredA.await(), deferredB.await()) // suspends until both finish
+}
+```
+*Follow-up:* What happens in the parallel snippet if `makeNetworkCallA()` fails? — Because both are children under `coroutineScope`, a failure in child `deferredA` immediately cancels the scope, which in turn cancels sibling `deferredB` and propagates the exception out of the block, preventing a leaked task.
+

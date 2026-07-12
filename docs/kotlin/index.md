@@ -16,6 +16,11 @@ its syntax.
     Scope functions, delegation & delegated properties, `lazy`, collections vs sequences, inline/
     `reified`/`crossinline`, extensions, operators, destructuring, DSLs, Java interop.
 
+-   :material-coffee: **[Java, OOP & SOLID](java-oop.md)**
+
+    SOLID principles, OOP core concepts, Abstract class vs interface, Generics, Concurrency & ThreadPools,
+    memory management, custom exceptions, serialization, collections internals, and synchronization.
+
 </div>
 
 ## Why interviewers probe Kotlin deeply

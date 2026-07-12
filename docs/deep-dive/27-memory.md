@@ -376,3 +376,12 @@ class DownloadCallback(activity: MainActivity) {
 !!! question "6. When would you use `onTrimMemory`, and how does it differ from `onLowMemory`?"
     `onTrimMemory(level)` (from `ComponentCallbacks2`) is a **graded** signal to shed memory: foreground levels (`RUNNING_MODERATE/LOW/CRITICAL`) ask you to trim while still visible; `UI_HIDDEN` fires when your UI goes fully offscreen (release GL/large bitmaps); and `BACKGROUND → MODERATE → COMPLETE` fire as you move up the LRU kill list — `COMPLETE` means you're next to die, so release everything. It's the deterministic place to purge in-memory caches. `onLowMemory()` is the legacy single-level callback, roughly equivalent to `TRIM_MEMORY_COMPLETE`, with no gradation.
     **Follow-up:** *Where should image caches be trimmed?* At `≥ TRIM_MEMORY_BACKGROUND`, since that reliably means you've become a cached process — much better than guessing based on lifecycle callbacks alone.
+
+!!! question "7. Is it possible to force Garbage Collection in Android, and is it a good practice in production?"
+    **Answer.** It is **not possible to strictly guarantee** immediate Garbage Collection in Android. Calling `System.gc()` or `Runtime.getRuntime().gc()` acts only as a **suggestion** to the ART runtime. While the system usually attempts to run a collection cycle shortly after the call (which is why LeakCanary uses it to verify leaks), it is **strongly discouraged in production**.
+    
+    Forcing GC causes unnecessary **stop-the-world pauses** (stutter), consumes CPU and battery, and disrupts the runtime's optimized GC scheduling. If an app runs out of memory, it is due to memory leaks or excessive allocation sizes, not a failure of the GC to collect unreachable memory. The fix is to find and resolve leaks or optimize allocations, never to call `System.gc()`.
+    
+    *Follow-up:* When does LeakCanary force GC? — LeakCanary forces GC before dumping the heap to prevent false positive leak reports for objects that are simply waiting for the next natural garbage collection cycle. If the object is still strongly reachable after a forced GC, it is confirmed to be leaking.
+
+

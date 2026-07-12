@@ -473,3 +473,21 @@ Behavior states: `STATE_EXPANDED`, `STATE_COLLAPSED`, `STATE_HALF_EXPANDED`, `ST
 !!! question "5. Why `FragmentContainerView` instead of `FrameLayout`, and why is the child FragmentManager important?"
     **Answer:** `FragmentContainerView` fixes two concrete bugs: it reorders drawing so an **exiting** fragment doesn't draw on top of the **entering** one during `replace()` animations, and it dispatches `WindowInsets` sequentially to children (a `FrameLayout` gives every child the same insets, so only one consumes correctly). It's also fragment-aware — rejects non-fragment children and can inflate the initial fragment via `android:name`. The **child FragmentManager** (`childFragmentManager`) hosts nested fragments (ViewPager2 pages, nested nav) with a lifecycle clamped to the parent, keeping nested back-stack and lifecycle ownership correct; using the activity's manager for nested fragments breaks that nesting.
     **Follow-up:** *How does ViewPager2 keep off-screen pages non-interactive?* Via `setMaxLifecycle(page, STARTED)` on the `FragmentStateManager`, so only the visible page reaches `RESUMED`.
+
+!!! question "6. FragmentPagerAdapter vs FragmentStatePagerAdapter — what is the difference, and when is each used?"
+    **Answer:** Both are legacy ViewPager adapters that manage fragment lifecycles, but they differ in how they retain off-screen fragments:
+    
+    *   **`FragmentPagerAdapter`**: Keeps the **entire fragment instance** resident in memory. When a page is off-screen, its view is destroyed (`onDestroyView`), but the fragment instance itself is kept alive. It is best for small, static paging setups (like 3 tabs) where memory consumption is low.
+    *   **`FragmentStatePagerAdapter`**: Destroys the **fragment instance** itself when off-screen. It saves the fragment's state (`onSaveInstanceState`) and removes it from the FragmentManager. When returned to, it reconstructs the fragment instance and restores its state. It is best for large, dynamic, or resource-heavy paging lists (like a photo album loop) to save memory.
+    
+    *Note:* In modern Jetpack development, both are deprecated in favor of `ViewPager2` and **`FragmentStateAdapter`**, which behaves like `FragmentStatePagerAdapter` but uses `RecyclerView` under the hood.
+    **Follow-up:** *What happens to a FragmentPagerAdapter if you have 100 pages?* You will likely trigger an OutOfMemory (OOM) error because 100 fragment instances, along with their associated business logic and view models, remain fully resident in memory.
+
+!!! question "7. How do you communicate between two Fragments, and why is direct method calling discouraged?"
+    **Answer:** Direct coupling (e.g. `parentFragmentManager.findFragmentByTag(...)` and casting to call methods) makes fragments fragile and non-reusable. Jetpack provides three clean, decoupled mechanisms:
+    
+    1.  **Shared ViewModel (Preferred for Activity scope)**: Fragments share a ViewModel scoped to their parent Activity: `val viewModel: MyViewModel by activityViewModels()`. They communicate by observing common state (e.g., `StateFlow`).
+    2.  **Fragment Result API (Preferred for simple one-off results)**: A child/sibling fragment sets a result: `setFragmentResult("key", bundle)`. The receiving fragment listens: `setFragmentResultListener("key") { _, bundle -> ... }`. It is safe across configuration changes and lifecycle-aware.
+    3.  **Navigating with SafeArgs**: When using the Navigation Component, pass arguments in a bundle using generated Directions classes.
+    **Follow-up:** *When would you use an interface callback to the Activity?* When the fragment needs to tell the host Activity to execute a global action (like launching a new flow or updating a toolbar) and you are not using a navigation graph or want to keep the fragment completely decoupled from the specific Activity implementation.
+

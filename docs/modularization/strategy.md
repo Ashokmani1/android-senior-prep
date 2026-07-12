@@ -200,3 +200,35 @@ dependencies {
 ```
 
 Compare that to the 40+ lines every module would otherwise repeat (compileSdk, minSdk, Java/Kotlin targets, Compose compiler, Hilt plugin + compiler, test runner…). That repetition is exactly what [convention plugins](convention-plugins.md) eliminate.
+
+---
+
+## Measuring modularization & build health
+
+A common lead/architect interview prompt is: **"How do you measure if your modularization strategy is successful, and what metrics do you track?"**
+
+Reciting "we have 50 modules" is not a senior answer. You must discuss concrete metrics and measurement tooling:
+
+### A. Key Metrics to Track
+
+1.  **Parallel Execution Index (PEI):**
+    *   **What it is:** The percentage of tasks in a build that Gradle can execute concurrently.
+    *   **How to measure:** Using Gradle Build Scans (`--scan`). If you have a deep linear dependency chain (`:app -> :A -> :B -> :C -> :D`), PEI is near 0%. If your graph is wide and shallow, PEI approaches 80%+.
+2.  **Critical Path Length:**
+    *   **What it is:** The longest sequence of dependent compilation tasks that must run sequentially.
+    *   **How to optimize:** Keep your graph flat. Ensure feature modules are leaves and never depend on sibling features. Banish deep inheritance chains.
+3.  **Module Coupling (Afferent & Efferent Coupling):**
+    *   **Afferent Coupling (Indegree):** How many modules depend on this module. Core modules (`:core:model`, `:core:network`) should have a very high indegree. Feature modules should have an indegree of **exactly 0** (no other module compiles if a feature changes).
+    *   **Efferent Coupling (Outdegree):** How many modules this module depends on. A high outdegree makes a module fragile; a change to any of its dependencies will trigger its recompilation.
+4.  **Configuration Avoidance & Cache Hit Rate:**
+    *   **What it is:** The percentage of task outputs retrieved directly from the local or remote build cache during incremental builds.
+    *   **Target:** A healthy codebase should aim for a **>85% cache hit rate** for CI incremental builds.
+5.  **Lines of Code (LoC) Distribution:**
+    *   **What it is:** The percentage of code residing in the `:app` shell vs. feature/core modules.
+    *   **Target:** The `:app` module should act only as a thin coordinator/composition root. It should contain **<5% of the total codebase**. If `:app` contains 50% of the code, you have a "fake modularization" (a monolith hidden behind module wrappers).
+
+### B. Tooling to Enforce and Measure Boundaries
+
+*   **Dependency Analysis Gradle Plugin (Autonomous Apps):** Run this to automatically find unused dependencies, dependencies that should be `implementation` instead of `api`, or transitively leaked classes that you rely on but haven't declared.
+*   **Module Graph Assertion:** Write a unit test using NowInAndroid's graph assertion class that asserts the graph rules programmatically on CI (e.g. `assertNoFeatureToFeatureDependencies()` or `assertNoCoreDependingOnFeature()`).
+*   **ArchUnit / Konsist:** Write architecture unit tests to assert code rules across module borders (e.g., "classes in `:domain` must not import any packages containing `.android` or `.ui`").

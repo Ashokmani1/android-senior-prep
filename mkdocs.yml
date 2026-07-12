@@ -86,6 +86,7 @@ nav:
       - kotlin/index.md
       - Language Core: kotlin/fundamentals.md
       - Idioms & Functional: kotlin/idioms.md
+      - Java, OOP & SOLID: kotlin/java-oop.md
   - Senior Rounds:
       - Architecture:
           - architecture/index.md

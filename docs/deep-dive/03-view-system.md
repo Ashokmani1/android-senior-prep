@@ -607,3 +607,12 @@ Both measure their single child with an `UNSPECIFIED` (unbounded) spec in the sc
     **Answer:** Use a hardware layer when animating a **complex but static** subtree's `alpha`, `translation`, `rotation`, or `scale`. The view is rendered once into an offscreen GPU texture (FBO); each frame just re-composites that texture with the new transform instead of re-recording/re-drawing the subtree — big win for expensive content being moved as a unit. Enable it for the animation's duration and set it back to `LAYER_TYPE_NONE` in the end action to release the texture. Cost: GPU memory (`w × h × 4` bytes) and a render-target switch; if the layer's content changes every frame, the texture is re-created constantly and it becomes *slower* than no layer. `ViewPropertyAnimator` already applies a hardware layer automatically for alpha/transform animations, so manual management is often redundant.
 
     **Follow-up:** *When would you use `LAYER_TYPE_SOFTWARE`?* To force a CPU/Skia code path for effects the GPU pipeline can't render (certain `PorterDuff` xfermodes, some `clipPath`/shadow cases on older APIs) or to snapshot the view to a `Bitmap` — accepting that you lose all GPU acceleration for that view.
+
+!!! question "7. What is the difference between `View.GONE` and `View.INVISIBLE`?"
+    **Answer:** Both visibility values hide the view from the screen, but they differ in how they affect the layout:
+    
+    *   **`View.INVISIBLE`**: The view is hidden, but it **still occupies space** in the layout. Its dimensions are calculated during `onMeasure`, and it is positioned during `onLayout` as normal, but `draw` is skipped. The surrounding views remain positioned relative to it.
+    *   **`View.GONE`**: The view is hidden and **does not occupy any space** in the layout. It behaves as if it was completely removed from the hierarchy. The parent skips it during measurement/layout, and surrounding views adjust to fill the empty space.
+    
+    **Follow-up:** *What happens when you toggle visibility between GONE and VISIBLE?* It triggers a `requestLayout()` up the tree to re-calculate dimensions and re-position all views, which is relatively expensive. Toggling between INVISIBLE and VISIBLE only triggers an `invalidate()` (redraw), which is much faster.
+
