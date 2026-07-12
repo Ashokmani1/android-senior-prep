@@ -198,6 +198,36 @@ dependencies {
 }
 ```
 
+### Core library desugaring
+
+Newer Java 8+ APIs (`java.time`, `java.util.stream`, default/static interface methods on some collection types) aren't available on older Android runtimes even though your `minSdk` might not support them natively — **core library desugaring** rewrites your bytecode at build time to backport implementations of those APIs so you can use them down to a much lower `minSdk`, without touching your source.
+
+```kotlin
+android {
+    compileOptions {
+        isCoreLibraryDesugaringEnabled = true
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+}
+```
+
+It's a D8/R8 build step (the desugar tool rewrites calls to backport classes), not a runtime library you `implementation()` normally — hence the dedicated `coreLibraryDesugaring(...)` configuration. Distinct from Kotlin's own bytecode-target concerns (`jvmTarget`) and from Compose's *conceptual* "desugaring" of `@Composable` calls into `Composer`-carrying functions — same word, unrelated mechanisms.
+
+### 16 KB page size
+
+Android 15 (API 35+) devices can run with a **16 KB memory page size** instead of the traditional 4 KB, and Google Play now requires new apps/updates targeting recent API levels to support it. The practical impact is almost entirely about **native code**: any `.so` library your app or a dependency ships must have its ELF segments aligned to 16 KB, or the app **fails to load on 16 KB-page devices** at all — not a subtle bug, a hard crash on startup.
+
+- **Pure-Kotlin/Java apps with no native dependencies** are unaffected — there's nothing to align.
+- **Apps with native libraries** (via NDK, or transitively through libraries like SQLite/Room's bundled native code, some image/video codecs, or Compose's own native layer) need those `.so` files built 16 KB-aligned. AGP 8.5.1+ / recent NDK versions align by default; the risk is an **older prebuilt `.so` from a third-party AAR** that was built before this was standard.
+- **How to check:** Android Studio's APK Analyzer flags unaligned native libraries, and `zipalign -c -P 16` / `readelf` can verify alignment directly on the extracted `.so` files.
+
+!!! warning "This is a distribution gate, not a runtime toggle"
+    You can't fix a misaligned `.so` from your own `build.gradle` — it has to be rebuilt aligned by whoever compiled it (you, or the third-party library's maintainer with an updated release). Treat "does every native dependency ship a 16 KB-aligned `.so`" as a checklist item before a Play submission, the same way you'd check `targetSdk` deadlines (see [M36 App Distribution](36-distribution.md)).
+
 ---
 
 ## Build types, flavors, variants

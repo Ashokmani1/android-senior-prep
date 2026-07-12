@@ -160,6 +160,15 @@ sequenceDiagram
 
 ## Encryption at rest
 
+!!! note "Hash vs. encrypt vs. encode — three different operations"
+    Interviewers reach for this triad to check you're not treating security as one undifferentiated "make it unreadable" bucket:
+
+    - **Encode** (Base64, URL-encoding) is **not security at all** — a reversible, keyless format transformation for safe transport/storage of binary data as text. Anyone can decode it with no secret.
+    - **Hash** (SHA-256, bcrypt) is **one-way**: it produces a fixed-size digest you cannot reverse to the original input, used to *verify* data (checksums, password storage — never store a raw password, store its salted hash) rather than to *recover* it.
+    - **Encrypt** (AES, RSA) is the only one of the three that's **reversible with a key** — the point is exactly that someone holding the correct key *can* get the original data back; anyone without it can't. This is the tool for data that must be recovered later (tokens at rest, files), as opposed to hashing (data you only ever need to *compare*, never recover).
+
+    **Symmetric vs. asymmetric encryption**, the sub-question that usually follows: symmetric (AES) uses **one shared key** for both encrypt and decrypt — fast, and what you use for bulk data (the Keystore examples below are all AES). Asymmetric (RSA, EC) uses a **key pair** — encrypt with the public key, decrypt only with the private key (or sign with the private key, verify with the public) — slower, but solves the problem symmetric encryption can't: distributing a secret to someone you haven't already securely shared one with. In practice they're combined — TLS negotiates a session with asymmetric crypto, then encrypts the actual traffic symmetrically because it's orders of magnitude faster.
+
 Use Jetpack Security (`androidx.security:security-crypto`) rather than rolling AES yourself. A `MasterKey` lives in the Keystore (hardware-backed) and wraps the data-encryption keys; the library handles IVs, AEAD, and key wrapping correctly.
 
 ```kotlin
