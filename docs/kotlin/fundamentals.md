@@ -232,7 +232,18 @@ val a = User("1", "Ann")
 val b = a.copy(name = "Anne")   // structural clone, one field changed
 ```
 
+### Pros & Cons of Data Classes
+
+| Aspect | Pros | Cons |
+|---|---|---|
+| **Boilerplate Reduction** | Auto-generates standard methods (`equals`, `hashCode`, `toString`, `copy`, and `componentN`), eliminating hundreds of lines of repetitive code. | **Bytecode Bloat:** Generates substantial compiled JVM bytecode. Having thousands of data classes can noticeably increase APK size and method counts. |
+| **State Immutability** | `copy()` makes it trivial to follow functional/UDF patterns (making fresh copies to update properties rather than modifying references in-place). | **Shallow Copies:** `copy()` only clones references. If a field is a mutable collection or object, the original and copy share the same reference, leading to accidental mutations. |
+| **Unpacking & Destructuring** | Supports positional destructuring (`val (id, name) = user`) out of the box, improving local variable readability. | **Refactoring Fragility:** Destructuring binds by position (`component1()`), not property name. Reordering constructor arguments silently breaks destructuring callers without compiler warnings. |
+| **Stream Performance** | Reactive containers (like `StateFlow`) use `==` (`equals`) to skip duplicate state emissions; auto-generated equality drives clean deduping. | **Partial Equality:** Body-declared properties are ignored by `equals`/`hashCode`/`copy`, causing bugs if developers assume the entire class state is compared. |
+| **Extensibility** | Implements interfaces normally; can act as subtypes inside sealed classes or sealed interfaces. | **No Class Inheritance:** A `data class` cannot be declared `abstract`, `open`, `sealed`, or `inner`, and it cannot extend another `data class` (subclass copies are unsafe). |
+
 ---
+
 
 ## `sealed class` vs `sealed interface` vs `enum`
 
