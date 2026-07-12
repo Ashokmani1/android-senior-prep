@@ -323,6 +323,28 @@ Common families: sizing (`size`, `fillMaxWidth`, `weight` inside Row/Column), sp
     - `.clip()` before `.background()` vs after changes whether the background is clipped.
     - `.clickable()` defines the touch target at its position in the chain — put it *after* `padding` if you want the padding to be tappable, *before* if not.
 
+!!! note "`Modifier.padding().height()` vs `Modifier.height().padding()`"
+    Same principle, applied to sizing instead of drawing — each layout modifier constrains the *next* one inward, so which one runs first changes what the fixed size actually measures.
+
+    ```kotlin
+    // height() OUTSIDE padding(): the box is exactly 100.dp tall; padding eats INTO that,
+    // shrinking the visible/content area to 100.dp - 32.dp.
+    Box(Modifier.height(100.dp).padding(16.dp))
+
+    // padding() OUTSIDE height(): padding is applied first (adds to the outer size), then
+    // a 100.dp-tall child is placed inside — the total occupied height is 100.dp + 32.dp.
+    Box(Modifier.padding(16.dp).height(100.dp))
+    ```
+
+    Read the chain outside-in for constraints: whichever sizing modifier is **outermost** is measured against the *incoming* constraints from the parent; everything inside it receives the *already-reduced* constraints. This is exactly why `.padding().background()` and `.background().padding()` differ for drawing, and `.padding().height()` / `.height().padding()` differ for the final measured box size — same "modifiers wrap inward" mental model, two different modifier families.
+
+!!! note "There is no `margin` in Compose"
+    Compose has no `Modifier.margin()` — the View-system split between "my own inset" (padding) and "space around me, outside my bounds" (margin) doesn't exist as two separate concepts here. Everything is `padding`, applied at whichever level actually needs the space:
+
+    - **Space around a single child inside its parent** → put `Modifier.padding(...)` **on the child itself**, not the parent (padding on the parent shrinks everyone's content area; padding on one child only pushes that child).
+    - **Even spacing between siblings in a `Row`/`Column`** → `Arrangement.spacedBy(8.dp)` on the parent, not per-child padding (avoids doubled gaps at the boundary between two padded children).
+    - **Asymmetric "margin" on one side only** → `Modifier.padding(start = 16.dp)` on that child, same as any other padding — there's no separate margin API to reach for.
+
 !!! note "Window insets modifiers"
     Since edge-to-edge is the default (see [M37 Material](37-material.md) for the View-system side), Compose gives you inset-aware modifiers instead of a manual `OnApplyWindowInsetsListener`:
 

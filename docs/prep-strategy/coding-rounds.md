@@ -389,6 +389,40 @@ fun isPangram(s: String): Boolean {
 O(n + 26) — reads clean with `all { }`; a `BitSet`/`Int` bitmask of seen letters is the O(n)
 one-pass alternative if the interviewer wants to avoid the `in` scan repeating over `lower`.
 
+### Sorting an array — algorithms and complexity
+
+The generic "sort this array, what's the time complexity" warm-up is really asking you to place a handful of algorithms on the same table, not to hand-roll one from scratch:
+
+| Algorithm | Time (avg) | Time (worst) | Space | Stable? | Notes |
+|---|---|---|---|---|---|
+| Bubble / Selection sort | O(n²) | O(n²) | O(1) | Bubble: yes · Selection: no | Never the real answer; only correct as "the naive baseline before I optimize" |
+| Insertion sort | O(n²) | O(n²) | O(1) | Yes | Actually good for small/near-sorted input — this is why hybrid sorts fall back to it below a size threshold |
+| Merge sort | O(n log n) | O(n log n) | O(n) | Yes | Guaranteed n log n, but not in-place — the extra O(n) buffer is the tradeoff |
+| Quicksort | O(n log n) | **O(n²)** | O(log n) | No | Fastest in practice (cache-friendly, in-place) but worst case degrades on already-sorted/adversarial input without a good pivot strategy (median-of-three, random pivot) |
+| Kotlin's `sort()`/`sorted()` | O(n log n) | O(n log n) | O(n) worst-case | Yes | **Timsort** — a hybrid: merge sort overall, insertion sort on small runs, exploits already-sorted subsequences. This is what you actually call; the four above are what you explain when asked why |
+
+```kotlin
+// What you'd actually write in production — Kotlin's stdlib is Timsort under the hood.
+val sorted = nums.sorted()          // new List, O(n log n)
+nums.sort()                          // in-place on a MutableList/Array, same algorithm
+
+// A from-scratch quicksort, if asked to implement one:
+fun quicksort(arr: IntArray, lo: Int = 0, hi: Int = arr.lastIndex) {
+    if (lo >= hi) return
+    val pivot = arr[(lo + hi) / 2]
+    var i = lo; var j = hi
+    while (i <= j) {
+        while (arr[i] < pivot) i++
+        while (arr[j] > pivot) j--
+        if (i <= j) { arr[i] = arr[j].also { arr[j] = arr[i] }; i++; j-- }
+    }
+    quicksort(arr, lo, j)
+    quicksort(arr, i, hi)
+}
+```
+
+The complexity answer that actually scores: name the naive O(n²) family, then Timsort/merge/quick at O(n log n), state *why* comparison-based sorting can't beat O(n log n) (the decision-tree lower bound), and mention that if the input is bounded integers (not arbitrary comparable values), counting sort/radix sort break that bound at O(n + k) — which is exactly the trick behind [Sort 0s, 1s, 2s](#sort-0s-1s-2s-dutch-national-flag) below, a 3-value special case of counting sort done in one pass.
+
 ### Sort 0s, 1s, 2s (Dutch national flag)
 
 Single pass, three pointers, no counting sort / extra array.
