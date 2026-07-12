@@ -30,15 +30,20 @@
   --border-color-soft: rgba(0, 0, 0, 0.06);
   --bg-gradient: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
   --table-header-bg: #e2e8f0;
+  --heading-color: #2e3b82;
 }
 
 /* Dark Mode (Slate) Styling */
 [data-md-color-scheme="slate"] {
   --md-primary-fg-color: #0f172a;
   --md-primary-fg-color--transparent: rgba(99, 102, 241, 0.12);
-  --md-primary-bg-color: #0b0f19;
+  /* Material uses --md-primary-bg-color for TEXT/ICONS drawn on top of the
+     primary-colored header — it must stay light, not mirror the dark page bg,
+     or the header title, search icon, and hamburger become invisible. */
+  --md-primary-bg-color: #e8ecf9;
   --md-accent-fg-color: #34d399;
   --md-accent-bg-color: rgba(52, 211, 153, 0.15);
+  --heading-color: #a5b4fc;
 
   /* Text and BG colors */
   --md-default-fg-color: #e2e8f0;
@@ -66,7 +71,7 @@ body {
   letter-spacing: -0.03em;
   font-size: 2.25rem;
   margin-bottom: 1.5rem;
-  color: var(--md-primary-fg-color);
+  color: var(--heading-color);
   position: relative;
 }
 
