@@ -388,6 +388,65 @@ It's a robot crawler, not a test suite — it can't reach flows behind login or 
 
 ---
 
+## CI/CD for Android
+
+Everything above — signing, the AAB, tracks, mapping upload — is what a *pipeline* should be doing on every merge to `main`/`release`, not a person clicking through Android Studio and the Play Console by hand. The senior framing: **CI** (continuous integration) is "every PR proves it doesn't break the build," **CD** (continuous delivery/deployment) is "a green build on the right branch reaches a track without a human copying files around."
+
+### A typical pipeline shape
+
+```mermaid
+flowchart LR
+    PR["Pull request"] --> L["Lint + unit tests<br/>(JVM, fast)"]
+    L --> B["Assemble debug<br/>+ instrumentation tests"]
+    B --> G["Merge to main"]
+    G --> R["Build release AAB<br/>+ sign + R8"]
+    R --> U["Upload mapping.txt"]
+    U --> T["Publish to Internal/Closed track"]
+    T -->|manual promote| P["Production, staged rollout"]
+    style G fill:#4A2D6E,color:#fff
+    style T fill:#2E7D32,color:#fff
+```
+
+- **On every PR:** lint, unit tests (JUnit/MockK/Turbine — see [M34 Testing](34-testing.md)), and `assembleDebug` are the cheap, fast gate — this is what "CI" actually protects, and it should fail fast (minutes, not tens of minutes) or engineers start ignoring it.
+- **On merge to the release branch:** build and sign the release AAB, run R8, upload `mapping.txt`, and push to a Play track automatically — this is the "CD" half, and it's what turns a release from a manual multi-step ritual (and its error potential — wrong keystore, forgotten mapping upload) into a repeatable, auditable one.
+- **Promotion to production is usually a manual gate**, not automatic — staged rollout and halt decisions (above) are judgment calls a human should make, even in an otherwise fully automated pipeline.
+
+### The tools
+
+| Layer | Typical choice | Job |
+|---|---|---|
+| CI runner | GitHub Actions, GitLab CI, Bitrise, CircleCI | Executes the pipeline on triggers (PR, push, tag) |
+| Android release automation | **Fastlane** (`fastlane/Fastfile`) | Wraps signing, versioning, changelog, and Play upload behind one command (`fastlane deploy_internal`) — the de facto standard so the *steps* aren't reinvented per project |
+| Play upload | `fastlane supply`, or the Google Play Developer API directly | Publishes the AAB + release notes to a track, sets rollout % |
+| Secrets | CI's encrypted secrets store (never the repo) | Keystore, `keystore.properties` values, Play service-account JSON |
+
+```yaml
+# Sketch of a GitHub Actions release job — illustrative, not exhaustive
+release:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-java@v4
+      with: { distribution: temurin, java-version: '17' }
+    - run: echo "$KEYSTORE_BASE64" | base64 -d > release.jks
+      env: { KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }} }
+    - run: ./gradlew bundleRelease
+      env:
+        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    - run: bundle exec fastlane deploy_internal   # uploads AAB + mapping.txt to Play
+      env: { SUPPLY_JSON_KEY_DATA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }} }
+```
+
+!!! danger "Secrets discipline is the part that actually causes incidents"
+    Never echo a decoded keystore or a service-account JSON to logs; use CI's masked/secret env vars, not repo files. Rotate the Play service-account key like any other credential. A leaked upload-signing secret is recoverable (see [upload key vs app signing key](#upload-key-vs-app-signing-key-play-app-signing) above) — a leaked Play API service-account key with publish rights is not something you want to discover from an unexpected release.
+
+!!! tip "What actually differentiates a senior answer here"
+    Not "we use GitHub Actions" — anyone can name a tool. The signal is knowing *what gate belongs at which stage* (fast JVM checks block the PR; slow release signing/upload runs only after merge), that promotion to production should stay a deliberate human decision even in a fully automated pipeline, and that the pipeline is what makes the signing/mapping-upload/versionCode discipline from this module actually *reliable* instead of a checklist someone eventually forgets.
+
+---
+
 ## Interview Q&A
 
 !!! question "1. Explain upload key vs app signing key. Why is it *safer* to let Google hold the signing key?"

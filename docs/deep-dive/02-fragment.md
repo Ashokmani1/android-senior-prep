@@ -57,6 +57,9 @@ stateDiagram-v2
 !!! warning "`onDestroyView` vs `onDestroy` — the interview trap"
     They are **not** paired to the same lifecycle. `onDestroyView` can fire repeatedly (every time the fragment goes onto the back stack via `replace()`, or is detached) while `onDestroy` fires **once** at the end. Any `View`/binding reference held past `onDestroyView` is a leak, because the old view tree is gone but the fragment (and your field) survive.
 
+!!! note "Where did `onActivityCreated` go?"
+    Older material lists `onActivityCreated(bundle)`, called after the host `Activity`'s `onCreate` completes — historically the recommended place to touch the fragment's view because it guaranteed the host was ready. It's **deprecated since Fragment 1.3** for two reasons: by the time it fired the fragment's own view (from `onCreateView`) had already existed for a while, so code kept ending up in the wrong callback purely to wait for "the activity is ready" — and that guarantee turned out to be redundant, because `onViewCreated` already fires with a fully valid `viewLifecycleOwner` and everything `onActivityCreated` promised. The fix was simply to stop pretending a fragment needs to synchronize with its host's `onCreate` at all — do view setup in `onViewCreated`, and reach for `activity`/`requireActivity()` there or in `onAttach` if you need the host directly.
+
 ### A.3 Lifecycle by scenario
 
 !!! example "Scenario walkthroughs"
@@ -150,6 +153,27 @@ viewLifecycleOwner.lifecycleScope.launch {
 
 !!! note "Why `viewLifecycleOwner` throws before `onCreateView`"
     It is only valid between `onCreateView` returning non-null and `onDestroyView`. Accessing it in `onCreate` or after `onDestroyView` throws `IllegalStateException: Can't access the Fragment View's LifecycleOwner ... when getView() is null`.
+
+!!! danger "`launchWhenStarted`/`launchWhenResumed`/`launchWhenCreated` — deprecated, and not just cosmetically"
+    These older `lifecycleScope` extensions look like they solve the same problem as `repeatOnLifecycle`: they **suspend** the coroutine's execution while the lifecycle is below the target state, and resume it once the state is reached again. The difference that got them deprecated is exactly that word *suspend* — they never cancel the block, they just pause it in place.
+
+    ```kotlin
+    // Deprecated: suspends past onStop, but a Flow collector already inside
+    // the block keeps its subscription alive the whole time — no cancel/restart.
+    lifecycleScope.launchWhenStarted {
+        viewModel.uiState.collect { render(it) }
+    }
+
+    // Current idiom: repeatOnLifecycle actually CANCELS the block at onStop
+    // and restarts it (a fresh collect(), fresh subscription) at the next onStart.
+    lifecycleScope.launch {
+        repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.uiState.collect { render(it) }
+        }
+    }
+    ```
+
+    Concretely: a `flow.collect { }` started inside `launchWhenStarted` stays *subscribed* to its upstream the entire time the app is backgrounded — for a hot flow like `SharedFlow`/`callbackFlow` that upstream keeps doing work (and can keep emitting into a suspended, non-consuming collector) even though the UI can't render any of it. `repeatOnLifecycle` avoids this by tearing the collector down and re-subscribing fresh, which is also why it composes correctly with one-shot `SharedFlow` events (see [M13 Flow](13-flow.md)) where a stale subscription would misbehave. Prefer `repeatOnLifecycle` (or `flowWithLifecycle`) unconditionally today; the `launchWhenX` family is deprecated in `lifecycle-runtime-ktx` and should be treated as a migration target, not a starting point.
 
 ### A.7 `setRetainInstance(true)` — deprecated
 

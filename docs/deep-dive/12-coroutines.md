@@ -303,6 +303,17 @@ val v: Int = d.await()      // suspends until done; rethrows if async body threw
 
 `await()` on a failed `Deferred` throws at the call site — this is why `async` exceptions surface where you await, not at throw time (see Part F).
 
+For a fixed set of parallel tasks, `awaitAll(d1, d2, ...)` is the idiomatic replacement for calling `.await()` on each `Deferred` individually — same result (all values, in order, once all complete), but it also **fails fast**: if any one of them throws, `awaitAll` cancels the rest immediately instead of waiting for stragglers to finish before you notice the failure.
+
+```kotlin
+suspend fun fetchAllUsers(ids: List<String>): List<User> = coroutineScope {
+    val deferreds: List<Deferred<User>> = ids.map { id -> async { fetchUser(id) } }
+    deferreds.awaitAll()     // fails fast: one throwing cancels the rest immediately
+}
+```
+
+`awaitAll` requires every `Deferred` to share the same result type `T` (it's `vararg Deferred<T>` or `Collection<Deferred<T>>`, returning `List<T>`) — for a small *fixed* set of differently-typed results (a `Deferred<User>` and a `Deferred<Feed>`), just `await()` each one individually inside `coroutineScope { }`, which already gives you the same fail-fast cancellation via structured concurrency.
+
 ---
 
 ## Part C — Dispatchers

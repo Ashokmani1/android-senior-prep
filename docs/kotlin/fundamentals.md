@@ -88,6 +88,50 @@ a == b      // true  — structural
 a === b     // false — different objects (b is freshly built)
 ```
 
+### `equals()` / `hashCode()` contract
+
+Every type inherits `equals()`/`hashCode()` from `Any` (default: reference identity, same as `===`). Overriding one without the other is a bug generator, because hash-based collections (`HashMap`, `HashSet`) look an object up by hash bucket *first*, then confirm with `equals()` only within that bucket.
+
+The contract, and why each direction matters:
+
+- **Equal objects must produce the same hash code.** If `a == b` but `a.hashCode() != b.hashCode()`, a `HashSet` looks in the *wrong bucket* for `b` after inserting `a` — `set.contains(b)` silently returns `false` even though `b` is "equal" to a member. This is the classic bug from a hand-rolled `equals()` without a matching `hashCode()`.
+- **Equal hash codes do *not* imply equal objects — that's a collision, and it's expected, not a bug.** Two unequal objects landing in the same bucket is normal; `HashMap`/`HashSet` handle it by chaining entries within a bucket and falling back to `equals()` to disambiguate. A good `hashCode()` just makes collisions *rare enough* to keep lookups near O(1); it can never eliminate them (pigeonhole: infinite possible objects, finite `Int` hash space).
+- **`data class` gets both for free**, generated together from the primary-constructor properties, so they're always consistent — one more reason to prefer `data class` over hand-writing `equals()`/`hashCode()`.
+
+```kotlin
+class BadPoint(val x: Int, val y: Int) {
+    override fun equals(other: Any?) = other is BadPoint && x == other.x && y == other.y
+    // hashCode() NOT overridden — still identity-based (inherited from Any)
+}
+
+val set = hashSetOf(BadPoint(1, 1))
+set.contains(BadPoint(1, 1))   // false! equal by equals(), but different hash buckets
+```
+
+### Stack vs heap — the model boxing plugs into
+
+Kotlin inherits the JVM's two memory regions, and it's worth having the model explicit before boxing (below) makes sense as anything other than a rule to memorize.
+
+- **Stack** — one per thread, holds local variables and method call frames (LIFO: a frame is pushed on call, popped on return). It stores **primitive values directly** (`Int`, `Boolean`, etc. as raw bits) and **object references** (a pointer, not the object). Allocation/deallocation is just moving a stack pointer — extremely cheap, and fully automatic: a frame's memory is reclaimed the instant the function returns, no garbage collector involved.
+- **Heap** — shared across all threads, holds every actual object (instances of classes, arrays, boxed primitives). Heap objects are **not** freed on scope exit; they live until nothing references them, at which point the **garbage collector** reclaims them (see [M27 Memory](../deep-dive/27-memory.md) for GC internals) — inherently slower and less predictable than a stack pop.
+
+```kotlin
+fun calculate(): Int {
+    val a = 5              // raw int value, lives in this frame on the stack
+    val b = 10              // same
+    return a + b             // frame (a, b) popped on return — nothing to collect
+}
+
+class Person(val name: String)
+fun createPerson(): Person {
+    val person = Person("Alice")   // the Person OBJECT is allocated on the heap;
+    return person                    // `person` itself is just a reference, on the stack
+}                                     // the reference goes away here — the heap object doesn't,
+                                      // it survives as long as `main`'s reference to it does
+```
+
+A **local `val`/`var` holding a primitive never touches the heap** — that's the fast path. A **local variable holding a class instance is a stack-resident pointer to a heap-resident object** — two different lifetimes, easy to conflate. This is exactly the distinction boxing is about to complicate.
+
 ### Int boxing
 
 Kotlin has no primitive/wrapper split in *source* — `Int` is `Int`. But it compiles to JVM `int` where possible and to `java.lang.Integer` when a reference is required: nullable `Int?`, generic type arguments (`List<Int>`), and anywhere an object is needed.
@@ -389,6 +433,7 @@ class BillingManager private constructor(val ctx: Context) {
 - **`@JvmStatic`** on a companion member emits a real static method/field, so Java calls `BillingManager.get(ctx)` instead of `BillingManager.Companion.get(ctx)`.
 - **Companion factory pattern** (above) hides the constructor and controls instantiation — the idiomatic Kotlin replacement for static factory methods.
 - **`const`** members are inlined statics; `@JvmField` exposes a companion `val` as a plain static field.
+- **A companion object can be named** — `companion object Factory { ... }` — which is purely cosmetic from Kotlin (`BillingManager.get(ctx)` still works unchanged) but gives Java callers a clearer, non-default name to reference explicitly (`BillingManager.Factory.get(ctx)` instead of the default `BillingManager.Companion.get(ctx)`). A class may have at most one companion object, named or not.
 
 **Object expressions** are Kotlin's anonymous classes — instantiated each time, can capture variables and implement multiple interfaces:
 
@@ -399,6 +444,23 @@ val listener = object : View.OnClickListener, LifecycleObserver {
 ```
 
 Unlike a `companion object`/`object` declaration (one singleton), an object expression creates a fresh instance per evaluation.
+
+### `synchronized` — the JVM monitor lock
+
+Kotlin has no `synchronized` *keyword* (unlike Java); `synchronized(lock) { block }` is a stdlib inline function that wraps the block in the JVM's built-in **monitor lock** — the same `monitorenter`/`monitorexit` bytecode Java's `synchronized` block compiles to. Any object can serve as the lock (`this`, a dedicated `Any()` sentinel, or a class for a static-style lock); only one thread can hold a given object's monitor at a time, and other threads block until it's released — including on exception, since the unlock happens in an implicit `finally`.
+
+```kotlin
+class Counter {
+    private var count = 0
+    private val lock = Any()
+
+    fun increment() = synchronized(lock) {   // one thread inside at a time
+        count++
+    }
+}
+```
+
+It's a **coarse, blocking** primitive — cheap and simple for short, uncontended critical sections (the companion-object singleton double-checked-locking pattern above is the canonical Android example), but it's real thread blocking, not cooperative suspension. Two traps worth naming: **never call it inside a coroutine** — it blocks the underlying thread rather than suspending, defeating the point of using coroutines at all (reach for a `Mutex` with `withLock { }` instead, which *suspends*); and **never lock on a mutable or reused object** (`synchronized(this)` in a class other code also synchronizes on, or a boxed value) — you can end up synchronizing on different objects than you think, silently losing the mutual exclusion.
 
 ---
 

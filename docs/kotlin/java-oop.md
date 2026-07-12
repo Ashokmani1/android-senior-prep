@@ -407,3 +407,31 @@ graph TD
     "If a thread pool's max size is 10 and core size is 2, submitting 5 tasks will spawn 5 threads immediately." — No; it will spawn 2 core threads, queue the remaining 3 in the work queue, and only spawn more threads if the queue fills up.
 
 **Follow-ups:** Under what conditions would you choose a `SynchronousQueue` over a `LinkedBlockingQueue` in a thread pool? · How does the ForkJoinPool used by Kotlin Coroutines differ from a standard ThreadPoolExecutor?
+
+---
+
+## 13. Object-level lock vs. class-level lock, and daemon vs. user threads — what's actually different at the JVM level?
+
+!!! quote "Strong answer"
+    **Object-level lock vs. class-level lock**
+
+    Every `synchronized` block or method acquires the monitor of *some specific object* — the distinction is entirely about **which object that is**:
+
+    * **Object-level (instance) lock** — `synchronized(this)` or a non-static `synchronized` method locks the **monitor of that specific instance**. Two threads calling a synchronized instance method on **two different objects** never contend; they're locking two different monitors. This only protects state *within one instance*.
+    * **Class-level (static) lock** — `synchronized(MyClass.class)` or a static `synchronized` method locks the monitor of the **`Class` object itself** — one per class, shared by every instance and every thread in the JVM for that class. This is what you need to protect *static* mutable state (a shared counter, a classic double-checked-locking singleton's instance field).
+
+    The bug this distinction catches: mixing them. Protecting a `static` field with an **instance** lock (`synchronized(this)`) does nothing — two threads holding two different instances each get their own monitor and race on the shared static field anyway. The lock granularity must match the state's scope: instance state → instance lock, static state → class lock.
+
+    **Daemon threads vs. user (non-daemon) threads**
+
+    The distinction only matters for one thing: **whether the JVM waits for the thread before exiting.**
+
+    * **User threads** (the default) keep the JVM alive — `main()` returning doesn't shut down the process while a non-daemon thread is still running.
+    * **Daemon threads** (`thread.isDaemon = true`, set *before* `start()`) are background/service threads the JVM does **not** wait for — the moment the last user thread finishes, the JVM exits immediately, **killing every daemon thread mid-execution**, `finally` blocks and all. GC's own worker threads are the canonical daemon thread.
+
+    This is why you never put work with side effects that must complete (a flush-to-disk, a network ack) on a bare daemon thread with no other coordination — it can simply vanish. On Android this distinction mostly stays invisible because the Zygote-forked process model and `ActivityThread`'s own non-daemon main thread keep the process alive independent of it — but it's exactly what a coroutine dispatcher's backing thread pool must get right (threads that don't block process exit but also don't silently drop in-flight work, which coroutines solve via structured concurrency and cancellation, not the raw daemon flag).
+
+!!! warning "Red flag"
+    "I made it a daemon thread so it keeps running in the background even after my app's main logic finishes." — Backwards: a daemon thread is *less* durable, not more — it's the one guaranteed to be cut off the instant nothing else is keeping the JVM alive.
+
+**Follow-ups:** Why does a plain `synchronized(this)` instance lock fail to protect a `static` counter shared by all instances? · Why do coroutine dispatchers use bounded worker-thread pools with explicit lifecycle management instead of raw daemon threads?
