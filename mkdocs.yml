@@ -80,6 +80,7 @@ nav:
       - prep-strategy/index.md
       - How to Clear the Loop: prep-strategy/how-to-clear.md
       - 4-Week Plan: prep-strategy/study-plan.md
+      - Manifest Book Coverage: prep-strategy/manifest-coverage.md
   - Senior Rounds:
       - Architecture:
           - architecture/index.md
@@ -159,3 +160,5 @@ nav:
           - "M37 · Material Components": deep-dive/37-material.md
           - "M38 · Firebase": deep-dive/38-firebase.md
           - "M39 · Advanced Topics": deep-dive/39-advanced.md
+          - "M40 · View & Framework Extras": deep-dive/40-framework-extras.md
+          - "M41 · Compose Runtime Internals": deep-dive/41-compose-internals.md

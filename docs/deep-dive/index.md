@@ -1,7 +1,8 @@
 # Core Android Deep Dive
 
-A 12-phase, 39-module internals curriculum — the *"how does it actually work under the hood"*
-questions that separate a Senior/Lead candidate from someone who only uses the APIs.
+A 12-phase, 41-module internals curriculum — the *"how does it actually work under the hood"*
+questions that separate a Senior/Lead candidate from someone who only uses the APIs. Fully
+[cross-referenced to the *Manifest Android Interview* book](../prep-strategy/manifest-coverage.md).
 
 !!! tip "How this complements the Senior Rounds"
     The [Senior Rounds](../architecture/index.md) teach **judgment** (architecture, modularization,
@@ -25,7 +26,7 @@ questions that separate a Senior/Lead candidate from someone who only uses the A
 | **10 · Library Internals** | M31 Coil · M32 JSON | Image pipeline, serialization |
 | **11 · Performance & Testing** | M33 Performance · M34 Testing | Profiling, test pyramid |
 | **12 · Build & Deploy** | M35 Gradle · M36 Distribution | Variants, signing, bundles |
-| **Extras** | M37 Material · M38 Firebase · M39 Advanced | Breadth topics |
+| **Extras** | M37 Material · M38 Firebase · M39 Advanced · M40 View/Framework Extras · M41 Compose Internals | Breadth + book gap-fillers |
 
 ## How to study a module
 
