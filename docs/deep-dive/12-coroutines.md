@@ -318,15 +318,46 @@ A dispatcher is a `ContinuationInterceptor` that decides **which thread(s)** a c
 
 ### `Main`
 
-Handler-based. Every resume posts to the main `Looper`'s message queue. `Dispatchers.Main.immediate` skips the post if you're already on the main thread (avoids a needless re-dispatch and a frame's worth of latency).
+*   **Under the Hood:** `Dispatchers.Main` is backed by the Android platform `Handler` bound to the main `Looper` (`Looper.getMainLooper()`). Every dispatch pushes a message onto the main `MessageQueue`.
+*   **Main.immediate Optimization:** When you launch or resume a coroutine on `Dispatchers.Main.immediate`, the dispatcher first checks if the current thread is already the main thread (`Looper.myLooper() == Looper.getMainLooper()`). If true, it runs the coroutine block **synchronously in-place**, skipping the Handler dispatch queue. This avoids a 1-frame (16.6ms at 60Hz) delay and eliminates the allocation of handler runnables.
 
-### `IO` and `Default` share a pool
+### `IO` and `Default` Internals (`CoroutineScheduler`)
 
-Important and non-obvious: **`IO` and `Default` share the same underlying thread pool** (the `CoroutineScheduler`). `Default` is capped at CPU count; `IO` can grow to 64 threads *on top of* that but reuses the same worker pool. Switching between them via `withContext` is cheap and often doesn't hand off to a physically different thread. `IO` is elastic because blocking calls should not starve CPU work — extra threads absorb blocked ones.
+A common staff-level interview question is: **"Why does Default target CPU count, why is IO elastic, and how do they share the same pool under the hood?"**
+
+`Dispatchers.Default` and `Dispatchers.IO` do not manage separate thread pools. They are simply different **logical views** over a single shared thread pool called the **`CoroutineScheduler`**:
+
+```
+                 [ CoroutineScheduler (Shared Pool) ]
+                            |
+           +────────────────┴────────────────+
+           |                                 |
+[ Dispatchers.Default ]               [ Dispatchers.IO ]
+  - Capped: Core Count                  - Elastic: Max 64 threads
+  - Runs CPU-bound tasks                - Runs blocking tasks
+```
+
+#### 1. The Work-Stealing Algorithm
+*   **Local Queues:** Each worker thread (`CoroutineScheduler.Worker`) in the pool maintains its own **local lock-free queue** of tasks (size up to 127). It pushes and pops tasks from this local queue without global lock contention.
+*   **Global Queue:** A fallback queue used for tasks that cannot be allocated locally or when local queues overflow.
+*   **Work-Stealing Flow:** When a worker thread runs out of tasks in its local queue:
+    1.  It queries the **global queue**.
+    2.  If the global queue is empty, it attempts to **steal** tasks from the local queue of other worker threads. It checks other workers' local queues, steals half of their accumulated tasks, and executes them. This keeps all CPU execution units balanced and fully saturated.
+
+#### 2. Why `Default` is Sized to CPU Cores
+*   **The Math:** Sized to `Runtime.getRuntime().availableProcessors()` (at least 2).
+*   **The Rationale:** CPU-bound tasks (math calculations, JSON parsing, image rendering) consume 100% of a CPU core's capacity. Spawning more threads than physical CPU cores yields **zero performance gain** because the hardware cannot run more threads in parallel. Instead, extra threads trigger frequent **OS context switching** (saving/restoring thread state), wasting CPU cycles.
+
+#### 3. Why `IO` is Elastic (Sized up to 64)
+*   **The Math:** Sized to `max(64, coreCount)`.
+*   **The Rationale:** Blocking I/O operations (network requests, database transactions, file read/write) put the worker thread into a `BLOCKED` or `WAITING` state, releasing the CPU core. If the pool was capped at core count, a few slow file writes would stall the entire pool, starving other tasks.
+*   **Elastic Scaling:** The `CoroutineScheduler` tracks the state of its worker threads. When an `IO` task blocks a worker, the scheduler detects the blockage and **spawns a new worker thread** (or releases one from the park queue) to maintain execution throughput for non-blocking `Default` tasks. Once the blocking I/O completes, excess workers are phased out and parked to save memory.
+*   **Context-Switching Win:** Because they share the same pool, switching from `Default` to `IO` (e.g. from parsing to saving data) via `withContext` is incredibly cheap. Often, the scheduler simply re-designates the *same physical worker thread* to run the next task instead of performing a costly OS-level thread context switch.
 
 ### `Unconfined`
 
 Does not confine the coroutine to any thread. It starts in the caller's thread and, after a suspension, resumes on whatever thread called `resumeWith`. Order-of-execution is surprising; use only for tests or specific low-level cases.
+
 
 ### Custom dispatchers and `limitedParallelism`
 
