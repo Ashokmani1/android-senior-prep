@@ -606,3 +606,17 @@ class SyncRepository @Inject constructor(
     *Follow-up:* `@TestInstallIn` vs `@UninstallModules`? — `@TestInstallIn` is global to the
     test source set (one shared fake); `@UninstallModules`/`@BindValue` is per-class, for
     one-off or per-test overrides.
+
+**Q7. How does Hilt perform field injection on @AndroidEntryPoint classes without using reflection at runtime?**
+:   Hilt uses a combination of **compile-time generated classes** and a **Gradle bytecode transformer** (using ASM/ByteBuddy) to perform field injection without runtime reflection.
+    
+    1.  **Generated base class:** For an Activity (e.g., `MainActivity`), Hilt generates an abstract base class `Hilt_MainActivity`. This generated class:
+        *   Implements `GeneratedComponentManagerHolder` and hosts an `ActivityComponentManager`.
+        *   Injects fields inside `onCreate` (Activities) or `onAttach` (Fragments) by calling the generated `injectMainActivity()` method of the component's injector wrapper.
+    2.  **Gradle Bytecode rewrite:** At compilation time, the Hilt Gradle plugin transforms your compiled `MainActivity` class file. It rewrites the bytecode to change the superclass from `AppCompatActivity` to the generated `Hilt_MainActivity` class.
+    3.  **Injector lookup:** When `Hilt_MainActivity.onCreate()` executes, it calls:
+        ```java
+        ((MainActivity_GeneratedInjector) this.generatedComponent()).injectMainActivity((MainActivity) this);
+        ```
+        This cast maps directly to generated code that sets each of your annotated `@Inject lateinit var` fields to their resolved values. Since all component lookups, casts, and assignments are compiled as direct Java method calls and field access, there is **zero reflection** or map lookup at runtime, matching hand-written constructor dependency injection speed.
+

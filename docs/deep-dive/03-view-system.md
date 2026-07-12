@@ -644,3 +644,18 @@ Both measure their single child with an `UNSPECIFIED` (unbounded) spec in the sc
     
     **Follow-up:** *What happens when you toggle visibility between GONE and VISIBLE?* It triggers a `requestLayout()` up the tree to re-calculate dimensions and re-position all views, which is relatively expensive. Toggling between INVISIBLE and VISIBLE only triggers an `invalidate()` (redraw), which is much faster.
 
+!!! question "8. Explain the low-level sync mechanics between the OS VSYNC pulse, Choreographer callbacks, and the rendering tree traversal."
+    **Answer:** The sync loop coordinates inputs, animations, and drawing to target frame rates (e.g. 60Hz, 90Hz, 120Hz) without jank:
+    
+    1.  **Work Scheduling:** When an app updates UI (e.g. `requestLayout()`, `invalidate()`, or starting an animator), the `ViewRootImpl` registers a traversal request by calling `Choreographer.getInstance().postFrameCallback()`.
+    2.  **VSYNC Subscription:** The `Choreographer` (which is a thread-local singleton on the main thread) subscribes to VSYNC pulses by calling into the underlying C++ Display Subsystem (`SurfaceFlinger`/`Hardware Composer`) via the C++ `DisplayEventReceiver`.
+    3.  **The OS VSYNC Pulse:** The display hardware emits a physical VSYNC pulse, indicating it is ready to consume the next frame. The OS routes this pulse to the app's `DisplayEventReceiver`, which schedules a Runnable on the main thread's `MessageQueue`.
+    4.  **Choreographer Dispatch:** When the main thread executes the VSYNC handler, `Choreographer` processes scheduled callbacks in a strict order:
+        *   **CALLBACK_INPUT:** Processes touch events, key events, and gestures.
+        *   **CALLBACK_ANIMATION:** Evaluates ValueAnimators, ObjectAnimators, and transition timelines (so state values update right before layout).
+        *   **CALLBACK_TRAVERSAL:** Runs the rendering pipeline traversal (`ViewRootImpl.performTraversals()`), walking the tree for `measure`, `layout`, and `draw`.
+    5.  **Synchronization with RenderThread:** After `draw()` records the Canvas operations into `DisplayLists` (RenderNodes) on the main thread, the main thread syncs this data to the **`RenderThread`**. The `RenderThread` processes the commands on the GPU and swaps buffers, preparing the frame for display composition.
+    
+    **Follow-up:** *What happens when a main thread task blocks past a VSYNC boundary?* If a heavy task (e.g. JSON parsing, DB read) runs on the main thread and exceeds the frame window (e.g. 16.6ms at 60Hz), the next VSYNC pulse arrives but the Choreographer cannot handle it because the main thread's Looper is busy. When the main thread finally becomes free, the Choreographer executes the delayed callback, notices that it skipped one or more VSYNC cycles, and prints the warning: `"Skipped N frames! The application may be doing too much work on its main thread."` This causes visual stutter (jank) because the display was forced to redraw the previous buffer.
+
+
