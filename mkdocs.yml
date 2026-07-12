@@ -81,6 +81,7 @@ nav:
       - How to Clear the Loop: prep-strategy/how-to-clear.md
       - 4-Week Plan: prep-strategy/study-plan.md
       - Manifest Book Coverage: prep-strategy/manifest-coverage.md
+      - Coding Rounds & Company Questions: prep-strategy/coding-rounds.md
   - Kotlin:
       - kotlin/index.md
       - Language Core: kotlin/fundamentals.md

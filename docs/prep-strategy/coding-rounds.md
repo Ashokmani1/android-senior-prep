@@ -1,0 +1,438 @@
+# Coding Rounds & Company Questions
+
+This kit is built around architecture, modularization, system design, and leadership — the rounds
+fundamentals don't win (see [the kit's premise](../index.md)). But Senior/Lead loops at several
+companies also run a **DSA-lite coding round**: short, practical problems, not LeetCode-hard,
+usually solvable in 15–20 minutes with clean code and the right edge cases called out.
+
+This page does two things:
+
+1. **Maps every question from real loops** to the module that already answers it, so you're not
+   hunting.
+2. **Solves the coding problems that genuinely have no home elsewhere in this kit** — worked in
+   Kotlin, with the complexity and the edge case an interviewer is listening for.
+
+---
+
+## Company round map
+
+| Company | Question | Where it's answered |
+|---|---|---|
+| Booking.com | Implement `findViewById` | [Worked below ↓](#implement-findviewbyid) |
+| Booking.com | Group mutual anagrams | [Worked below ↓](#group-mutual-anagrams) |
+| Booking.com | Classify four sides as square / rectangle / neither | [Worked below ↓](#square-rectangle-or-neither) |
+| Booking.com | Delta-encode a sequence | [Worked below ↓](#delta-encoding) |
+| Booking.com | Common elements across three arrays (with duplicates) | [Worked below ↓](#common-elements-in-three-arrays) |
+| Booking.com | `ConcurrentModificationException` twist | [Worked below ↓](#concurrentmodificationexception) |
+| Booking.com | Design a hotel list + detail screen, what APIs, layout | [System Design framework](../system-design/framework.md) · [Clean Architecture](../architecture/clean-architecture.md) — treat it as a paged list screen ([Instagram feed prompt](../system-design/questions.md#2-design-instagrams-feed)) + a detail screen backed by a single "get by id" endpoint |
+| Booking.com | Fragments & Activity lifecycle, Views, Layouts | [M1 Activity](../deep-dive/01-activity.md) · [M2 Fragment](../deep-dive/02-fragment.md) · [M3 View System](../deep-dive/03-view-system.md) |
+| Booking.com | Background tasks — AsyncTask, Service, IntentService | [M16 Services](../deep-dive/16-services.md) · [M17 WorkManager](../deep-dive/17-workmanager.md) |
+| Booking.com | Busiest day from check-in/check-out dates | [Worked below ↓](#busiest-day-interval-sweep) |
+| Booking.com | Elements repeated more than N times | [Worked below ↓](#elements-repeated-more-than-n-times) |
+| Booking.com | Classify a review as positive/negative/neutral from word lists | [Worked below ↓](#sentiment-from-word-lists) |
+| Spotify | Design Search feature architecture | [System Design framework](../system-design/framework.md) |
+| Spotify | Design a disk-based cache (cross-platform, secure, opaque, 100k+ objects) | [Client-side caching layer](../system-design/questions.md#6-design-a-client-side-caching-layer) — for the specific constraints, see [note below ↓](#disk-based-cache-constraints) |
+| Spotify | Linked List Cycle | [Worked below ↓](#linked-list-cycle) |
+| Spotify | Palindrome Linked List | [Worked below ↓](#palindrome-linked-list) |
+| PhonePe | Minimum meeting rooms | [Worked below ↓](#minimum-meeting-rooms) |
+| PhonePe | Anagram strings | [Worked below ↓](#group-mutual-anagrams) |
+| Paytm | String rotation check + rotation count | [Worked below ↓](#string-rotation) |
+| Paytm | Pangram check | [Worked below ↓](#pangram-check) |
+| Paytm | Design Search feature architecture | [System Design framework](../system-design/framework.md) |
+| Paytm | Sort an array of 0s, 1s, 2s | [Worked below ↓](#sort-0s-1s-2s-dutch-national-flag) |
+| Paytm | Abstract vs Interface | [Kotlin fundamentals](../kotlin/fundamentals.md#abstract-class-vs-interface) |
+| Paytm | Android memory questions | [M27 Memory](../deep-dive/27-memory.md) |
+| Meesho | SOLID principles | [Architecture Q&A](../architecture/questions.md) |
+| Meesho | Dagger, why DI, alternatives, build your own | [M14 Dagger](../deep-dive/14-dagger.md) · [DI across modules](../modularization/di-across-modules.md) |
+| Meesho | MVVM vs MVP, why not RxJava observables | [Patterns: MVVM · MVI · UDF](../architecture/patterns.md) |
+| Meesho | Multi-module benefits, dependency/abstraction handling | [Modularization strategy](../modularization/strategy.md) |
+| Meesho | `val` vs `const` | [Kotlin fundamentals](../kotlin/fundamentals.md#const-val-vs-val) |
+| Meesho | `inline` keyword | [Kotlin idioms](../kotlin/idioms.md#inline-noinline-crossinline) |
+| Meesho | `lateinit` vs `lazy` | [Kotlin fundamentals](../kotlin/fundamentals.md#lateinit-vs-lazy) |
+
+!!! tip "Why most of this table is links, not answers"
+    A Senior/Lead loop reuses the same fundamentals every other round asks — the differentiator
+    isn't a second copy of the answer, it's not having to search for it twice. Everything above
+    that already has a home stays there so it's kept in sync with the module's Interview Q&A
+    section; only the genuinely new problems (mostly the DSA warm-ups) get worked out below.
+
+---
+
+## Worked coding problems
+
+Each solution favors clarity and the standard-library idiom over cleverness — that's what a 20-minute
+round is actually grading. State the brute force, name the complexity, then reach for the better one.
+
+### Implement `findViewById`
+
+**The ask:** without using the framework, implement the tree lookup `findViewById` performs. Tests
+whether you understand the view tree is just a tree, not magic.
+
+```kotlin
+open class MiniView(val id: Int)
+
+class MiniViewGroup(id: Int) : MiniView(id) {
+    val children = mutableListOf<MiniView>()
+
+    fun addView(child: MiniView) { children += child }
+}
+
+fun MiniView.findViewById(target: Int): MiniView? {
+    if (id == target) return this
+    if (this is MiniViewGroup) {
+        for (child in children) {
+            child.findViewById(target)?.let { return it }
+        }
+    }
+    return null
+}
+```
+
+Depth-first, O(V) worst case where V is the number of views — real Android does the same DFS over
+`ViewGroup.mChildren`, which is why a deeply nested layout makes repeated `findViewById` calls
+measurably slower (one more reason View Binding / Compose skip the lookup entirely — see
+[M6 Binding](../deep-dive/06-binding.md)).
+
+### Group mutual anagrams
+
+Two words are mutual anagrams if their letters — sorted — are identical. Group by that signature.
+
+```kotlin
+fun groupAnagrams(words: List<String>): List<List<String>> =
+    words.groupBy { it.toCharArray().sorted().joinToString("") }.values.toList()
+```
+
+O(n · k log k) for n words of max length k. A single-word anagram *check* is the same idea without
+the grouping:
+
+```kotlin
+fun isAnagram(a: String, b: String): Boolean =
+    a.length == b.length && a.toCharArray().sorted() == b.toCharArray().sorted()
+```
+
+`sorted()` comparison is simplest to say out loud; a 26-length count array gets you O(n) instead of
+O(n log n) if the interviewer pushes on complexity.
+
+### Square, rectangle, or neither
+
+Given four side lengths (unordered), classify the shape they could form.
+
+```kotlin
+enum class Shape { SQUARE, RECTANGLE, NEITHER }
+
+fun classify(sides: List<Int>): Shape {
+    require(sides.size == 4)
+    val (a, b, c, d) = sides.sorted()
+    if (a != b || c != d) return Shape.NEITHER   // need two matching pairs
+    return if (a == c) Shape.SQUARE else Shape.RECTANGLE
+}
+```
+
+Sorting turns "do these four form two equal pairs" into a linear check — the trick worth saying
+out loud, since the brute-force pairwise comparison is uglier and easier to get wrong.
+
+### Delta encoding
+
+First element as-is; every subsequent element as the difference from its predecessor.
+
+```kotlin
+fun deltaEncode(nums: List<Int>): List<Int> =
+    nums.mapIndexed { i, n -> if (i == 0) n else n - nums[i - 1] }
+
+fun deltaDecode(deltas: List<Int>): List<Int> {
+    val result = mutableListOf<Int>()
+    var running = 0
+    for ((i, d) in deltas.withIndex()) {
+        running = if (i == 0) d else running + d
+        result += running
+    }
+    return result
+}
+```
+
+O(n) both ways — the follow-up is usually "why would you do this at all," and the answer is
+compressibility: monotonic or slow-changing sequences (timestamps, sensor readings) delta-encode
+to mostly-small numbers that compress far better than the raw values.
+
+### Common elements in three arrays
+
+Arrays may contain duplicates; return elements present in all three (each once).
+
+```kotlin
+fun commonElements(a: List<Int>, b: List<Int>, c: List<Int>): List<Int> {
+    val setB = b.toHashSet()
+    val setC = c.toHashSet()
+    return a.toHashSet().filter { it in setB && it in setC }
+}
+```
+
+O(a + b + c) with hash sets. If the arrays are pre-sorted, a three-pointer sweep does it in the
+same complexity with O(1) extra space instead of O(n) — worth mentioning as the follow-up trade.
+
+### `ConcurrentModificationException`
+
+**The ask:** why does removing from an `ArrayList` while iterating with a `for` loop throw, and how
+do you fix it?
+
+```kotlin
+val list = mutableListOf(1, 2, 3, 4, 5, 6)
+
+// Throws CME: the for-each's Iterator checks a modCount snapshot on every next(),
+// and list.remove() bumps modCount without the iterator knowing.
+for (n in list) {
+    if (n % 2 == 0) list.remove(n)   // CRASH on next hasNext()/next() call
+}
+```
+
+```kotlin
+// Fix 1 — mutate through the iterator itself; it updates modCount in lockstep.
+val it = list.iterator()
+while (it.hasNext()) {
+    if (it.next() % 2 == 0) it.remove()
+}
+
+// Fix 2 — build a new list instead of mutating in place.
+val filtered = list.filterNot { it % 2 == 0 }
+
+// Fix 3 — iterate a snapshot copy if you must mutate the original inside the loop.
+for (n in list.toList()) {
+    if (n % 2 == 0) list.remove(n)
+}
+```
+
+The twist interviewers like: removing the **second-to-last** element sometimes *doesn't* throw,
+because `hasNext()` can return `false` before the final `next()` call exposes the stale `modCount` —
+a good answer names this as "CME is best-effort detection, not a guarantee," not a bug in the JDK.
+
+### Busiest day — interval sweep
+
+Given a list of `(checkIn, checkOut)` day pairs, find the single busiest day. This is the same shape
+as the "merge intervals" family, solved with a difference array instead of merging.
+
+```kotlin
+fun busiestDay(bookings: List<Pair<Int, Int>>): Int {
+    val delta = sortedMapOf<Int, Int>()
+    for ((checkIn, checkOut) in bookings) {
+        delta[checkIn] = (delta[checkIn] ?: 0) + 1
+        delta[checkOut] = (delta[checkOut] ?: 0) - 1   // guest leaves on checkout day
+    }
+    var running = 0
+    var best = 0
+    var bestDay = -1
+    for ((day, change) in delta) {
+        running += change
+        if (running > best) { best = running; bestDay = day }
+    }
+    return bestDay
+}
+```
+
+O(n log n) for the sorted sweep over distinct days instead of O(n · range) for a naive per-day
+counter — the thing to call out is exactly which day a checkout "frees" (does the guest still
+occupy the room on the checkout day itself?), since that boundary condition is what the
+interviewer is actually testing.
+
+### Elements repeated more than N times
+
+```kotlin
+fun repeatedMoreThan(nums: List<Int>, times: Int): List<Int> =
+    nums.groupingBy { it }.eachCount()
+        .filterValues { it > times }
+        .keys.toList()
+```
+
+`groupingBy { }.eachCount()` is the idiomatic Kotlin replacement for "build a `HashMap<Int, Int>`
+and increment manually" — same O(n) complexity, no manual bookkeeping.
+
+### Sentiment from word lists
+
+Given positive-word and negative-word sets, score a free-text review.
+
+```kotlin
+enum class Sentiment { POSITIVE, NEGATIVE, NEUTRAL }
+
+fun classify(review: String, positives: Set<String>, negatives: Set<String>): Sentiment {
+    val words = review.lowercase().split(Regex("\\W+")).filter { it.isNotBlank() }
+    val score = words.sumOf { w -> if (w in positives) 1 else if (w in negatives) -1 else 0 }
+    return when {
+        score > 0 -> Sentiment.POSITIVE
+        score < 0 -> Sentiment.NEGATIVE
+        else -> Sentiment.NEUTRAL
+    }
+}
+```
+
+O(n) in review length with O(1) set lookups. The interesting follow-up is what happens with
+negation ("not good") — a pure bag-of-words scorer gets this wrong, which is the right moment to
+say "this is why production sentiment uses a model, not a word list" rather than over-engineer the
+toy version.
+
+### Linked list cycle
+
+Floyd's tortoise-and-hare — two pointers, no extra memory.
+
+```kotlin
+class Node(val value: Int) { var next: Node? = null }
+
+fun hasCycle(head: Node?): Boolean {
+    var slow = head
+    var fast = head
+    while (fast?.next != null) {
+        slow = slow?.next
+        fast = fast.next?.next
+        if (slow === fast) return true   // referential identity — same node object
+    }
+    return false
+}
+```
+
+O(n) time, O(1) space — the reason this beats a `HashSet<Node>` of visited nodes (also O(n) time
+but O(n) space). Note `===`, not `==`: you're asking "is this the same node," not "do these nodes
+have equal content" (see the `==` vs `===` section in [Kotlin fundamentals](../kotlin/fundamentals.md)).
+
+### Palindrome linked list
+
+Find the middle, reverse the second half in place, compare both halves.
+
+```kotlin
+fun isPalindrome(head: Node?): Boolean {
+    if (head == null || head.next == null) return true
+
+    var slow = head
+    var fast = head
+    while (fast?.next != null) {
+        slow = slow!!.next
+        fast = fast.next?.next
+    }
+
+    var prev: Node? = null
+    var curr = slow
+    while (curr != null) {
+        val next = curr.next
+        curr.next = prev
+        prev = curr
+        curr = next
+    }
+
+    var left = head
+    var right = prev
+    while (right != null) {
+        if (left!!.value != right.value) return false
+        left = left.next
+        right = right.next
+    }
+    return true
+}
+```
+
+O(n) time, O(1) extra space — the in-place reversal is the whole trick over the O(n)-space "copy
+into an array and two-pointer compare" answer; mention you're mutating the list's structure
+(restorable by reversing again) as the tradeoff for the space win.
+
+### Minimum meeting rooms
+
+Given `[start, end)` intervals, find the minimum number of rooms needed to hold all meetings
+concurrently — the same reasoning that would size a "busiest concurrent bookings" widget.
+
+```kotlin
+fun minMeetingRooms(intervals: List<IntArray>): Int {
+    val starts = intervals.map { it[0] }.sorted()
+    val ends = intervals.map { it[1] }.sorted()
+
+    var rooms = 0
+    var maxRooms = 0
+    var s = 0
+    var e = 0
+    while (s < starts.size) {
+        if (starts[s] < ends[e]) {
+            rooms++; s++
+        } else {
+            rooms--; e++
+        }
+        maxRooms = maxOf(maxRooms, rooms)
+    }
+    return maxRooms
+}
+```
+
+O(n log n) for the two sorts + linear sweep, O(n) space for the two arrays — beats the O(n²)
+pairwise-overlap check and is the same difference-array idea as [busiest day](#busiest-day-interval-sweep)
+above, just phrased as a running counter instead of a map.
+
+### String rotation
+
+Is `b` a rotation of `a`, and if so, by how many positions?
+
+```kotlin
+fun isRotation(a: String, b: String): Boolean =
+    a.length == b.length && (a + a).contains(b)
+
+fun rotationCount(original: String, rotated: String): Int {
+    if (!isRotation(original, rotated)) return -1
+    return (original + original).indexOf(rotated)   // left-rotation offset
+}
+```
+
+The `s + s` trick is the whole answer: every rotation of `a` is a substring of `a + a`, so the
+problem collapses to a single substring search — O(n) with Kotlin's built-in `indexOf` (KMP under
+the hood) instead of an O(n²) manual character-shift comparison.
+
+### Pangram check
+
+```kotlin
+fun isPangram(s: String): Boolean {
+    val lower = s.lowercase()
+    return ('a'..'z').all { it in lower }
+}
+```
+
+O(n + 26) — reads clean with `all { }`; a `BitSet`/`Int` bitmask of seen letters is the O(n)
+one-pass alternative if the interviewer wants to avoid the `in` scan repeating over `lower`.
+
+### Sort 0s, 1s, 2s (Dutch national flag)
+
+Single pass, three pointers, no counting sort / extra array.
+
+```kotlin
+fun sortColors(nums: IntArray) {
+    var low = 0
+    var mid = 0
+    var high = nums.lastIndex
+    while (mid <= high) {
+        when (nums[mid]) {
+            0 -> { nums[low] = nums[mid].also { nums[mid] = nums[low] }; low++; mid++ }
+            1 -> mid++
+            2 -> { nums[high] = nums[mid].also { nums[mid] = nums[high] }; high-- }
+        }
+    }
+}
+```
+
+O(n) time, O(1) space, single pass — the reason it beats "count zeros/ones/twos then overwrite"
+(also O(n) but two passes) is that it's the answer the interviewer actually wants when they say
+"can you do it in one pass."
+
+---
+
+## Disk-based cache constraints
+
+Spotify's version of the [client-side caching layer](../system-design/questions.md#6-design-a-client-side-caching-layer)
+prompt adds concrete constraints worth naming explicitly if asked:
+
+- **Platform-independent, opaque values (`ByteArray`), fixed 32-byte keys** → a simple two-file
+  design (append-only data log + an index mapping key → `(offset, length)`) generalizes across
+  platforms better than reusing a JVM-specific serialization format; keep the cache's on-disk
+  format free of Android-specific types.
+- **Persistent, 100k+ objects, configurable 10 MB–1 GB** → an index kept fully in memory (32-byte
+  key → offset/length is small per entry) with the blobs on disk; evict by LRU using an
+  in-memory doubly-linked list + hash map (the same structure as an [LRU cache](../system-design/questions.md#6-design-a-client-side-caching-layer)),
+  persisting the LRU order periodically so a crash doesn't require a full rebuild.
+- **Secure** → encrypt values at rest (AES-GCM, key from Android Keystore) — the index (keys +
+  offsets) can stay unencrypted since keys are opaque hashes, but never write plaintext values to
+  disk. See [M24 Security](../deep-dive/24-security.md) for the Keystore-backed pattern.
+- **Opaque** → the cache must not need to understand what's stored — no per-type serialization
+  logic in the cache layer itself; callers own encode/decode.
+
+This is a good prompt to state the two axes explicitly (LRU eviction *and* size-bound eviction can
+disagree — a cache under its object-count limit can still be over its byte-size limit) before
+diving into data structures.
