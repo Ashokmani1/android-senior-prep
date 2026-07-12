@@ -66,6 +66,10 @@ The Lifecycle library (`androidx.lifecycle`) collapses these into five `Lifecycl
     | Rotation / config change | `onPause → onStop → onSaveInstanceState → onDestroy → onCreate → onStart → onRestoreInstanceState → onResume` |
     | Enter split-screen (multi-window) | `onPause` (you lose focus but stay visible); focus toggles drive `onPause/onResume` without stop |
     | Process death in background | No callbacks at kill time; on return: `onCreate(savedState) → …` (fresh process) |
+    | `finish()` called *inside* `onCreate()` | `onCreate → onDestroy` — **skips `onStart`/`onResume`/`onPause`/`onStop` entirely** |
+
+!!! note "The `finish()`-in-`onCreate()` trap — onDestroy with nothing in between"
+    Calling `finish()` from `onCreate()` (a common pattern for a "router" activity that validates an argument or auth state and bails immediately) never lets the activity become visible: it goes straight from `onCreate` to `onDestroy`, skipping `onStart`, `onResume`, `onPause`, and `onStop` — not just the pause/stop pair, the entire visible-lifecycle side. This is the one legitimate case where `onDestroy` runs without ever having been resumed, and it's why `onDestroy` alone is not a safe place to assume any setup work from `onStart`/`onResume` has happened.
 
 !!! note "Multi-window changed the meaning of onPause"
     Pre-multi-window, developers treated `onPause` as "app going to background." That is now wrong. In split-screen two activities are simultaneously **visible**; only the focused one is RESUMED, the other is paused-but-STARTED. Never stop playback/rendering in `onPause` — use `onStop`. This is the single most common lifecycle regression when apps first support multi-window.
