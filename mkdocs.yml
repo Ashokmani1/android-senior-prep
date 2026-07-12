@@ -6,18 +6,21 @@ copyright: Personal interview-prep knowledge base.
 
 theme:
   name: material
+  font:
+    text: Inter
+    code: JetBrains Mono
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
-      accent: deep orange
+      primary: indigo
+      accent: cyan
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
-      accent: deep orange
+      primary: indigo
+      accent: cyan
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
@@ -35,6 +38,10 @@ theme:
     - content.code.annotate
   icon:
     repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
+
 
 markdown_extensions:
   - admonition

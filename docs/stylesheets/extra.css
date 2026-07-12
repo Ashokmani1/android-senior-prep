@@ -1,0 +1,135 @@
+/* Custom premium theme overrides */
+
+:root {
+  /* Core modern fonts */
+  --md-text-font: 'Inter', sans-serif;
+  --md-code-font: 'JetBrains Mono', monospace;
+
+  /* Custom HSL and hex colors */
+  --brand-primary: #5c6bc0;
+  --brand-primary-light: #8e99f3;
+  --brand-primary-dark: #26418f;
+  --brand-accent: #00e5ff;
+  
+  /* Smooth animations */
+  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Light mode overrides */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #3f51b5;
+  --md-primary-fg-color--transparent: rgba(63, 81, 181, 0.1);
+  --md-primary-bg-color: #ffffff;
+  --md-accent-fg-color: #00bcd4;
+  --md-admonition-bg-color: #f8fafc;
+}
+
+/* Dark mode overrides */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #1e1b4b;
+  --md-primary-fg-color--transparent: rgba(99, 102, 241, 0.1);
+  --md-primary-bg-color: #0f172a;
+  --md-accent-fg-color: #22d3ee;
+  --md-admonition-bg-color: #1e293b;
+}
+
+/* Custom layout & components aesthetics */
+.md-header {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  background-color: var(--md-primary-fg-color);
+  transition: var(--transition-smooth);
+}
+
+/* Beautiful Rounded Corners for Card layouts & code blocks */
+.md-typeset pre, 
+.md-typeset code,
+.highlight {
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 16px !important;
+  border-left-width: 6px !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05) !important;
+  transition: var(--transition-smooth);
+}
+
+.md-typeset .admonition:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Tabbed container modern aesthetics */
+.tabbed-set {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* Dynamic Grid cards updates */
+.grid.cards > li, 
+.grid.cards > a {
+  border-radius: 16px !important;
+  border: 1px solid rgba(0,0,0,0.06) !important;
+  padding: 1.5rem !important;
+  background: var(--md-admonition-bg-color) !important;
+  transition: var(--transition-smooth) !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
+}
+
+[data-md-color-scheme="slate"] .grid.cards > li,
+[data-md-color-scheme="slate"] .grid.cards > a {
+  border: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+.grid.cards > li:hover,
+.grid.cards > a:hover {
+  transform: translateY(-4px) scale(1.02);
+  border-color: var(--md-accent-fg-color) !important;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.08) !important;
+}
+
+/* Navigation items highlight with rounded edges */
+.md-nav__link {
+  border-radius: 8px;
+  transition: var(--transition-smooth);
+}
+
+.md-nav__link--active {
+  background-color: var(--md-primary-fg-color--transparent);
+  font-weight: 700;
+}
+
+/* Floating back-to-top button styling */
+.md-top {
+  border-radius: 50% !important;
+  background-color: var(--md-accent-fg-color) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: var(--transition-smooth);
+}
+
+.md-top:hover {
+  transform: translateY(-4px);
+}
+
+/* Scrollbars updates */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.4);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.6);
+}
