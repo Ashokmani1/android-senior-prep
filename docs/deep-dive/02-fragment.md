@@ -148,6 +148,27 @@ viewLifecycleOwner.lifecycleScope.launch {
 !!! note "Why `viewLifecycleOwner` throws before `onCreateView`"
     It is only valid between `onCreateView` returning non-null and `onDestroyView`. Accessing it in `onCreate` or after `onDestroyView` throws `IllegalStateException: Can't access the Fragment View's LifecycleOwner ... when getView() is null`.
 
+!!! danger "`launchWhenStarted`/`launchWhenResumed`/`launchWhenCreated` — deprecated, and not just cosmetically"
+    These older `lifecycleScope` extensions look like they solve the same problem as `repeatOnLifecycle`: they **suspend** the coroutine's execution while the lifecycle is below the target state, and resume it once the state is reached again. The difference that got them deprecated is exactly that word *suspend* — they never cancel the block, they just pause it in place.
+
+    ```kotlin
+    // Deprecated: suspends past onStop, but a Flow collector already inside
+    // the block keeps its subscription alive the whole time — no cancel/restart.
+    lifecycleScope.launchWhenStarted {
+        viewModel.uiState.collect { render(it) }
+    }
+
+    // Current idiom: repeatOnLifecycle actually CANCELS the block at onStop
+    // and restarts it (a fresh collect(), fresh subscription) at the next onStart.
+    lifecycleScope.launch {
+        repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.uiState.collect { render(it) }
+        }
+    }
+    ```
+
+    Concretely: a `flow.collect { }` started inside `launchWhenStarted` stays *subscribed* to its upstream the entire time the app is backgrounded — for a hot flow like `SharedFlow`/`callbackFlow` that upstream keeps doing work (and can keep emitting into a suspended, non-consuming collector) even though the UI can't render any of it. `repeatOnLifecycle` avoids this by tearing the collector down and re-subscribing fresh, which is also why it composes correctly with one-shot `SharedFlow` events (see [M13 Flow](13-flow.md)) where a stale subscription would misbehave. Prefer `repeatOnLifecycle` (or `flowWithLifecycle`) unconditionally today; the `launchWhenX` family is deprecated in `lifecycle-runtime-ktx` and should be treated as a migration target, not a starting point.
+
 ### A.7 `setRetainInstance(true)` — deprecated
 
 Retained fragments (instance survives config change while view is destroyed) were the pre-ViewModel way to keep data across rotation. **Deprecated since Fragment 1.3.** Problems: they were awkward to reason about (fragment survives, view doesn't), didn't survive process death, and encouraged putting business state in the fragment.

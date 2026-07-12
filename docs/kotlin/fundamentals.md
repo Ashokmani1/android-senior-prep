@@ -433,6 +433,7 @@ class BillingManager private constructor(val ctx: Context) {
 - **`@JvmStatic`** on a companion member emits a real static method/field, so Java calls `BillingManager.get(ctx)` instead of `BillingManager.Companion.get(ctx)`.
 - **Companion factory pattern** (above) hides the constructor and controls instantiation — the idiomatic Kotlin replacement for static factory methods.
 - **`const`** members are inlined statics; `@JvmField` exposes a companion `val` as a plain static field.
+- **A companion object can be named** — `companion object Factory { ... }` — which is purely cosmetic from Kotlin (`BillingManager.get(ctx)` still works unchanged) but gives Java callers a clearer, non-default name to reference explicitly (`BillingManager.Factory.get(ctx)` instead of the default `BillingManager.Companion.get(ctx)`). A class may have at most one companion object, named or not.
 
 **Object expressions** are Kotlin's anonymous classes — instantiated each time, can capture variables and implement multiple interfaces:
 
