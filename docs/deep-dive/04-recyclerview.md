@@ -233,6 +233,18 @@ The ViewHolder pattern caches child references once (in `onCreateViewHolder`),
 so bind is pure data assignment. `RecyclerView` *enforces* the pattern — you
 cannot use it without a `ViewHolder`.
 
+That's only half the reason it's mandatory, though. A `ViewHolder` is also the
+**unit of identity the recycler tracks**: it carries `mPosition`/`mOldPosition`,
+`mItemId`, and `mItemViewType` fields alongside the view reference, plus the
+`mFlags` bitmask from C.3. The four-tier lookup in Part A is only possible
+*because* every reusable view is wrapped in an object that already knows what
+position/id/type it last represented — scrap-by-position, cache-by-position,
+and scrap-by-stable-id all key off state stored **on the holder**, not on the
+raw `View`. A bare `View` has no place to carry that bookkeeping, which is why
+`ListView`'s optional, hand-rolled ViewHolder pattern could only ever solve the
+`findViewById` cost, never the richer position/id-aware reuse `RecyclerView`
+does.
+
 ### C.2 `getBindingAdapterPosition` vs `getAbsoluteAdapterPosition`
 
 Since the `ConcatAdapter` era there are two position spaces:
@@ -597,6 +609,37 @@ and a *post-layout* — then interpolates between them.
     If you pass a payload, `DefaultItemAnimator` treats it as an in-place update
     and skips the cross-fade — you animate the field yourself in bind. That's
     the point: cheaper and jank-free.
+
+### G.2 Deferred removal — why an animating view isn't recycled immediately
+
+When `notifyItemRemoved(pos)` fires, the item is gone from the *data* the
+instant `notifyItemRemoved` returns, but the outgoing **view** cannot simply be
+detached and recycled that same frame — it still needs to be on screen,
+running `animateDisappearance`, for the animation's duration. RecyclerView
+reconciles this with a **disappearing views** mechanism:
+
+1. `AdapterHelper` computes that the holder at that position has no home in the
+   post-change layout and flags it `FLAG_REMOVED` (Part C.3) instead of routing
+   it straight to `Recycler.recycleView()`.
+2. During the next `onLayoutChildren`, the LayoutManager consults RV's internal
+   *pre-layout* bookkeeping and keeps the removed holder's view **attached to
+   the view hierarchy** — it is a real child of the `RecyclerView` `ViewGroup`,
+   so it still measures/lays out/draws — while excluding it from the normal
+   position-to-child mapping so it isn't handed back out for a different item.
+3. RV calls `ItemAnimator.animateDisappearance(holder, preInfo, postInfoOrNull)`
+   instead of recycling. `DefaultItemAnimator` runs its fade/translate and,
+   critically, calls `dispatchAnimationFinished(holder)` on completion.
+4. RV's `ItemAnimatorListener.onAnimationFinished(holder)` callback is what
+   *actually* detaches the view and pushes the holder through the normal
+   recycle path from Part A (scrap → cache → pool). Only at this point does the
+   holder become eligible for reuse by a different position.
+
+This is also why a holder mid-disappearance-animation is excluded from the
+tier-0/1/2/4 lookups in Part A: reusing its view for a freshly bound position
+while it's still visibly animating out on screen would show the wrong content
+mid-flight. `setIsRecyclable(false)`/`FLAG_NOT_RECYCLABLE` is the same idea
+applied manually — pin a holder against recycling for any transient state a
+custom animation needs to own.
 
 ---
 

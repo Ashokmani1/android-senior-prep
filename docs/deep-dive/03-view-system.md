@@ -80,7 +80,21 @@ val spec = MeasureSpec.makeMeasureSpec(size, mode) // pack them back
 | `AT_MOST` | Child may be any size up to `size` | `wrap_content` | Must not exceed `size` |
 | `UNSPECIFIED` | Parent imposes no constraint | Measuring in scrollable dimension (`ScrollView`, `RecyclerView`) | Pick your natural size |
 
-The parent computes each child's `MeasureSpec` from **its own spec + the child's `LayoutParams`** via `ViewGroup.getChildMeasureSpec()`. The child then reports its choice by calling `setMeasuredDimension(w, h)` — **failing to call it (in both dimensions) throws `IllegalStateException`.**
+The parent computes each child's `MeasureSpec` from **its own spec + the child's `LayoutParams`** via `ViewGroup.getChildMeasureSpec(parentSpec, padding, childDimension)`. The child then reports its choice by calling `setMeasuredDimension(w, h)` — **failing to call it (in both dimensions) throws `IllegalStateException`.**
+
+#### Why `MeasureSpec` is a packed int, and how `getChildMeasureSpec` combines the two inputs
+
+The mode+size are packed into a *single primitive `int`* (2 high bits + 30 low bits) rather than a small object holding `(mode, size)` on purpose: `measure()` recurses through every view in the tree, every traversal, and a spec is passed down at every level. An `Int` is a stack value — zero allocation, zero GC pressure, cheap to pass and compare. Allocating a `MeasureSpec` object per child per traversal would be exactly the kind of per-frame garbage the framework studiously avoids elsewhere (see the `onDraw`/`Paint` reuse rule above).
+
+`getChildMeasureSpec` is the function that actually fuses "what the parent is allowed to do" with "what the child asked for" in `LayoutParams`. It is a pure function of parent-mode × child-dimension:
+
+| Parent's mode | Child `LayoutParams` = fixed `dp` | Child = `match_parent` | Child = `wrap_content` |
+|---|---|---|---|
+| `EXACTLY` | child gets `EXACTLY, dp` | child gets `EXACTLY, parentSize` | child gets `AT_MOST, parentSize` |
+| `AT_MOST` | child gets `EXACTLY, dp` | child gets `AT_MOST, parentSize` | child gets `AT_MOST, parentSize` |
+| `UNSPECIFIED` | child gets `EXACTLY, dp` | child gets `UNSPECIFIED, parentSize` | child gets `UNSPECIFIED, parentSize` |
+
+`parentSize` here is the parent's own resolved size **minus padding and the child's margins** — not the raw parent spec size. Reading the table: a fixed `dp` on the child always wins (`EXACTLY`) regardless of what the parent allows, because the child is explicit about its size. `match_parent` always inherits the parent's *mode* (the child is "the same kind of constrained" as the parent). `wrap_content` always downgrades a hard `EXACTLY` constraint to `AT_MOST` — the child may be smaller than the parent, never forced to exactly fill it. This table is the mechanical answer to "how does a `ViewGroup` build a child's `MeasureSpec`" — every custom `ViewGroup.onMeasure` that calls `measureChild`/`measureChildWithMargins` is driving this exact logic.
 
 `resolveSize()` / `resolveSizeAndState()` are the helpers that enforce the contract correctly so you don't hand-roll the mode logic:
 
@@ -106,6 +120,14 @@ override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
     - Ignoring `UNSPECIFIED` and returning 0 → your view vanishes inside a `ScrollView`.
     - Measuring children but forgetting `measureChildWithMargins` / not adding margins → overlap.
     - Doing allocations (`new Paint()`, list building) inside `onMeasure` — it runs on every traversal, sometimes twice. Allocate in the constructor or `onSizeChanged`.
+
+### Why measure can repeat but layout is strictly one pass
+
+This is the mechanical reason behind "measure can run twice, layout never does":
+
+- **Layout has no cross-child dependency at traversal time.** By the time `onLayout` runs, the *entire* subtree has already completed measurement — every child's `measuredWidth`/`measuredHeight` is final. A parent can therefore walk its children once, top-down, and place each one using numbers that are already known. There is nothing left to discover mid-pass.
+- **Measure can have a genuine dependency cycle within one `ViewGroup`.** A container's own desired size sometimes depends on its children's sizes, while a child's `MeasureSpec` depends on the container's size decision (weights) or on a *sibling's* measured size (`RelativeLayout`'s `toRightOf`/`alignBottom`). The only way to resolve that with the strict parent→child `MeasureSpec` contract is for the `ViewGroup`'s own `onMeasure` to call `child.measure()` **more than once**: once to learn a natural/used size, then again with a corrected spec once the container knows the real constraint. `LinearLayout` weights (pass 1: natural size + leftover space; pass 2: re-measure weighted children at the distributed size) and `RelativeLayout` (measure a view, then measure the sibling that depends on it) are both instances of this — the `ViewGroup` re-invokes `measure()` on the *same* child within one traversal, which `onLayout` structurally never needs to do.
+- **Nesting multiplies it.** Because the re-measure happens inside a single `ViewGroup.onMeasure`, and `onMeasure` is itself called top-down by the parent's own measure pass, a weighted `LinearLayout` nested inside another weighted `LinearLayout` doubles the child measurement work at *each* level — the informal "measure is exponential in nesting depth" claim.
 
 ### `onLayout()` deep dive
 
@@ -171,6 +193,12 @@ override fun onDraw(canvas: Canvas) {
 | `forceLayout()` | Main | flags this view for re-measure/layout **but does not schedule a traversal** | Rarely; you must still call `requestLayout()` on an ancestor to actually run it |
 
 - **`invalidate` = "repaint me"; `requestLayout` = "re-measure and re-lay-out me (and my ancestors)".** `requestLayout` propagates *up* to the `ViewRootImpl` (each parent sets `PFLAG_FORCE_LAYOUT`), then a full traversal comes *down*. It implies a redraw too.
+
+**Mechanically, the two calls walk the tree differently:**
+
+- `invalidate()` calls into `invalidateInternal`, which calls `mParent.invalidateChild(this, dirtyRect)` on the immediate `ViewParent`. Each `ViewGroup` up the chain unions that rect (translated into its own coordinate space) and forwards the call to *its* parent — a chain of `invalidateChild` calls, not a flag. It terminates at `ViewRootImpl.invalidateChildInParent()`, which accumulates the damage into its own dirty region and calls `scheduleTraversals()`. No `PFLAG_FORCE_LAYOUT` is ever touched, so measure/layout are skipped entirely — only `performDraw()` (and, per view, `RenderNode` re-recording) runs.
+- `requestLayout()` sets `PFLAG_FORCE_LAYOUT` on the view itself, then calls `mParent.requestLayout()` — and *that* implementation on `ViewGroup` also sets its own `PFLAG_FORCE_LAYOUT` before delegating further up. So every ancestor between the caller and the root ends up flagged dirty-for-layout, not just the root. It terminates at `ViewRootImpl.requestLayout()`, which sets `mLayoutRequested = true` and calls `scheduleTraversals()`. On the next traversal, `performMeasure`/`performLayout` walk top-down and each `ViewGroup.measureChild` **skips a child whose flag is clean AND whose incoming `MeasureSpec` is unchanged from last time** — this spec-equality check is why `requestLayout()` on one deeply-nested view doesn't force *every* sibling subtree to re-measure, only the flagged ancestors' chain plus whatever the changed size actually perturbs.
+- Both paths funnel into the same `scheduleTraversals()`, which is idempotent per frame: it posts a `Choreographer` callback only if one isn't already pending (`mTraversalScheduled` guard), which is the actual mechanism behind "traversals are coalesced" below.
 - **Dirty region:** historically `invalidate(l,t,r,b)` let the framework repaint only a rectangle. Under full hardware acceleration the unit of redraw is the `RenderNode`, so the whole view's display list re-records; the rectangle is mostly a legacy/software-path optimization.
 - **`forceLayout()` is not `requestLayout()`.** `forceLayout` only sets the "needs layout" flag locally; without a `requestLayout()` reaching the root, no traversal is scheduled and nothing happens.
 

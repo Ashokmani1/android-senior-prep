@@ -74,6 +74,15 @@ The Lifecycle library (`androidx.lifecycle`) collapses these into five `Lifecycl
 !!! note "Multi-window changed the meaning of onPause"
     Pre-multi-window, developers treated `onPause` as "app going to background." That is now wrong. In split-screen two activities are simultaneously **visible**; only the focused one is RESUMED, the other is paused-but-STARTED. Never stop playback/rendering in `onPause` — use `onStop`. This is the single most common lifecycle regression when apps first support multi-window.
 
+### The exact onSaveInstanceState / onStop ordering — and why it flipped in API 28
+
+`onSaveInstanceState()` and `onStop()` are both driven by `ActivityThread` off the same `ClientTransaction`, but their **relative order changed in Android 9 (API 28)**:
+
+- **Pre-28:** `onPause → onSaveInstanceState → onStop`. The `Bundle` was captured *before* the activity was told it was stopping.
+- **28+:** `onPause → onStop → onSaveInstanceState`. The `Bundle` is now captured *after* `onStop` runs (this is the order shown in the table above).
+
+The reason is a well-known `FragmentManager` bug class: pre-28, any `FragmentTransaction` committed inside `onStop()` (a place people reasonably persist state) was **never captured** by the save, because the save had already happened by the time `onStop` ran. On restore, that transaction silently vanished, corrupting the back stack. Flipping the order so `onSaveInstanceState` runs *after* `onStop` guarantees fragment work done in `onStop()` is reflected in the saved state. Relying on the modern ordering when your `minSdk` predates 28 is a latent bug.
+
 ### Configuration changes
 
 By default the system **destroys and recreates** the activity on any configuration change it isn't told to handle (rotation, locale, dark-mode toggle, font scale, screen size in multi-window resize). This is deliberate: it forces you to reload configuration-dependent resources (layouts, drawables, strings).
@@ -91,6 +100,12 @@ Two ways to cope:
 
 !!! warning "configChanges is a footgun, not an optimization"
     Handling `configChanges` yourself means *you* are responsible for re-applying every configuration-dependent resource manually. Miss `uiMode` and your app won't re-theme on dark-mode switch; miss `screenSize` and multi-window resize breaks. Only justify it for surfaces where recreation is genuinely unacceptable (a live GL/camera session, a game render loop). For 95% of screens, recreate + `ViewModel` is correct and less buggy.
+
+### Why destroy+recreate, mechanically: the Resources/AssetManager swap
+
+The recreate-by-default behavior isn't a legacy quirk — it follows directly from how resources are resolved. Every process holds a `Resources` object backed by an `AssetManager`, and the `AssetManager` is built against a specific `Configuration` (density, locale, orientation, night mode, font scale, …). Resource lookups (`R.drawable`, `R.string`, qualified `dimen`/`layout` values) are resolved by matching the *current* `Configuration` against each resource's qualifier bucket at the moment `Resources` was constructed — an inflated `Drawable`, a cached dimension, a themed color are all values baked in from that `AssetManager`.
+
+When a configuration change is delivered, `ActivityThread`/`ResourcesManager` swaps in a **new `AssetManager`/`Resources` pair** built against the new `Configuration`. Views already inflated under the *old* `Resources` don't automatically re-resolve their attributes — there is no general mechanism to walk a live view tree and re-fetch every qualifier-dependent value. Destroying and recreating the `Activity` is the framework's blunt-but-correct fix: a fresh `Activity` inflates a fresh view tree against the fresh `Resources`, guaranteeing every configuration-dependent value is right. `onConfigurationChanged()` (via `android:configChanges`) exists precisely to opt out of this swap-and-rebuild and perform the equivalent re-resolution yourself — which is exactly why handling it manually means manually re-applying every configuration-dependent resource.
 
 ### savedInstanceState vs onRetainNonConfigurationInstance vs ViewModel
 
@@ -226,6 +241,9 @@ PhoneWindow
 - **`DecorView`** is the top-level view; adding it to the **`WindowManager`** (a proxy to `WindowManagerService` in `system_server`) is what makes the window appear. Input events flow *back* from WMS → `ViewRootImpl` → `DecorView` → your view tree.
 - **`ViewRootImpl`** is the bridge between the view hierarchy and WMS; it drives traversals (`measure`/`layout`/`draw`), owns the `Choreographer`-synced frame callbacks, and handles the input pipeline.
 
+!!! note "Why view sizes are 0 in onCreate but correct in onResume"
+    `PhoneWindow`/`DecorView` exist after `attach()`, and `setContentView()` inflates your view tree into the `DecorView` during `onCreate()` — but none of that is attached to a **`ViewRootImpl`** yet. The actual `WindowManagerGlobal.addView()` call (which creates the `ViewRootImpl` and drives the first `measure`/`layout`/`draw` traversal) happens in `handleResumeActivity()`, **after** `onResume()` returns. That's why `view.width` / `getMeasuredWidth()` are unreliable in `onCreate`/`onStart` — the view hasn't been through a layout pass yet — and why `view.doOnPreDraw { }` / `ViewTreeObserver.addOnGlobalLayoutListener` exist to wait for that first traversal.
+
 ### Activity stack management: the records
 
 Inside `system_server`, the hierarchy of bookkeeping objects is:
@@ -236,6 +254,8 @@ Inside `system_server`, the hierarchy of bookkeeping objects is:
 | `TaskRecord` / `Task` | A stack of `ActivityRecord`s the user perceives as one "task" | A deck of cards |
 | `ActivityStack` / `Task` (root) | A collection of tasks on a display (historically `ActivityStack`; modernized into the `Task`/`WindowContainer` hierarchy in Android 10+) | A table of decks |
 | `ActivityDisplay` / `DisplayContent` | Everything on one display | The table |
+
+Concretely, the "back stack" is not a separate data structure: `Task` holds an ordered list of `ActivityRecord`s (historically `ArrayList<ActivityRecord> mActivities`), and that list **is** the back stack. `startActivity()` pushes a new `ActivityRecord` onto it (or locates/reuses one, per launch mode — Part C); pressing Back pops the top `ActivityRecord`, finishes it, and resumes whichever record is now on top. AMS isn't maintaining a parallel "navigation history" — it's the same bookkeeping list it already uses to know which activities exist in the task.
 
 **Recent Apps** is a rendering of the current tasks: the system keeps a snapshot (thumbnail) taken around `onStop`/`onPause`, plus the `TaskRecord` metadata. Swiping a task away in recents *removes the task and its `ActivityRecord`s* — which is why "recents swipe" behaves like `finishAndRemoveTask()` and can trigger process death, and why over-restoring stale UI on relaunch shows the well-known "stale snapshot flash" (fixable per-app with `setRecentsScreenshotEnabled(false)`).
 

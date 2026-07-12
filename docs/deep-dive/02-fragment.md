@@ -87,6 +87,12 @@ Internally the fragment tracks a monotonic state constant. The `FragmentManager`
 
 The manager never skips steps; going from `CREATED` to `RESUMED` runs every intermediate transition in order (and the reverse on the way down). `setMaxLifecycle()` caps the top state a fragment may reach (see C.6).
 
+### A.4b Fragment as `LifecycleOwner` — how `Lifecycle.State` is actually dispatched
+
+A `Fragment` implements `LifecycleOwner` and owns a `LifecycleRegistry`. Every framework callback (`onAttach`, `onCreate`, `onStart`, `onResume`, and their inverses) is immediately followed by `mLifecycleRegistry.handleLifecycleEvent(...)`, which moves the registry to the matching `Lifecycle.State` and notifies any `LifecycleObserver`s (`lifecycleScope`, `repeatOnLifecycle`, LiveData). This is *why* `lifecycleScope`/observer callbacks fire in lockstep with the callback table above — they aren't polling anything, they're notified synchronously as part of the same `moveToState()` step that just invoked your callback.
+
+The clamp that matters for nesting: `FragmentManager.moveToState()` computes each fragment's target as `min(fragment's own max target, setMaxLifecycle cap, host's current Lifecycle.State)`. A fragment can never be pushed to a state its host hasn't reached — a fragment attached to a `STARTED` (not yet `RESUMED`) host is itself capped at `STARTED` regardless of what the fragment "wants." This single `min()` is also what makes `childFragmentManager` nesting correct: a child fragment's registry is clamped by its **parent fragment's** Lifecycle state, which is itself clamped by the host Activity's — so a chain of nested fragments always trails the outermost host by construction, never leads it.
+
 ### A.5 `setArguments()` vs a parameterized constructor
 
 !!! danger "Never write a parameterized fragment constructor"
@@ -251,6 +257,12 @@ On restore, the `FragmentStateManager` reconstructs the fragment via `FragmentFa
 
 !!! note "Non-config vs saved state"
     Two channels survive config change: (1) **non-configuration instance** — retained `ViewModel`s and (legacy) retained fragments, kept in memory, lost on process death; (2) **saved instance state** — parcelled `Bundle`s written to disk, survive process death. `arguments` and `onSaveInstanceState` ride channel (2); `ViewModel` rides channel (1) plus `SavedStateHandle` for (2).
+
+### B.4b `Fragment.SavedState` — capturing one fragment's state independent of the Activity Bundle
+
+`FragmentManager.saveFragmentInstanceState(fragment)` returns a **`Fragment.SavedState`** — a `Parcelable` snapshot of exactly that one fragment's `FragmentState` (arguments, its own `onSaveInstanceState` bundle, view-hierarchy state), captured **on demand**, independent of whether the host Activity is saving its own `Bundle` right now. You hand that `SavedState` back in via `Fragment.setInitializationState()`/the `fragment.setInitialSavedState(state)` path (or, when constructing via `FragmentManager.fragmentFactory`, by reusing it during recreation) to reconstruct a fragment with its prior state without going through the Activity's `onSaveInstanceState` at all.
+
+This is the mechanism that lets something like a manually-managed pager or a "remove this fragment but let the user come back to it later" flow rebuild a fragment's state without keeping the instance resident. It's the same underlying `FragmentState` machinery the back stack and full Activity save use (B.4) — just invoked for a single fragment, on your schedule, rather than for the whole `FragmentManager` on the host's schedule.
 
 ### B.5 `FragmentContainerView` vs `FrameLayout`
 
