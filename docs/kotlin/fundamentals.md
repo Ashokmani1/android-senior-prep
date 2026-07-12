@@ -105,6 +105,27 @@ Kotlin has no primitive/wrapper split in *source* — `Int` is `Int`. But it com
 
     Never use `===` on numbers. Autoboxing in hot loops (via `Int?` or generic collections) also allocates — prefer specialized arrays (`IntArray`) on performance paths.
 
+### `String` vs `StringBuilder`
+
+`String` is immutable — every concatenation (`+`, `plus`, string templates) allocates a **new** `String`; the operands are never mutated. `StringBuilder` is a mutable, resizable char buffer — appends mutate the same backing array in place (growing it geometrically on overflow), so there's no new object per operation.
+
+```kotlin
+var s = ""
+for (i in 0 until 1000) s += i          // 1000 allocations — O(n²) total copying
+
+val sb = StringBuilder()
+for (i in 0 until 1000) sb.append(i)    // amortized O(n) — one growing buffer
+val result = sb.toString()
+```
+
+Kotlin already optimizes a single-expression string template — `"$a$b"` compiles to one `StringBuilder`/`invokedynamic` call (`StringConcatFactory` on newer JVM targets), not N intermediate `String`s. The actual trap is **concatenation inside a loop**: each `+=` on a `var s: String` is its own fresh builder + `append` + `toString()` *per iteration*, which is what produces the O(n²) cost. Use `StringBuilder` (or the idiomatic `buildString { }` wrapper) whenever you're accumulating across iterations; plain `+`/templates are fine for one-shot concatenation, where the compiler already does the right thing.
+
+```kotlin
+val s = buildString {                    // scoped StringBuilder, returns toString()
+    append("id="); append(id); append(", name="); append(name)
+}
+```
+
 ### `Any`, `Unit`, `Nothing`
 
 - **`Any`** — root of the non-null hierarchy (`Any?` is the true top type). Analogous to `java.lang.Object` but with only `equals`/`hashCode`/`toString`.
@@ -446,6 +467,19 @@ class C : A, B {
 
 Interfaces cannot hold state (no constructor, no backing fields), which is the line between interface (multiple inheritance of *behavior*) and abstract class (single inheritance of *state + behavior*).
 
+### Abstract class vs interface
+
+|  | `interface` | `abstract class` |
+|---|---|---|
+| State (backing fields) | none — only abstract/computed properties | can hold real, mutable state |
+| Constructors | none | yes — can enforce invariants at construction |
+| Inheritance | a class implements **many** | a class extends **one** |
+| Default method bodies | yes | yes |
+| Member visibility | `public`/`private` only | full range, including `protected` |
+| Use for | a capability multiple unrelated types can satisfy (`Comparable`, `Repository`) | a family of types sharing real implementation and state (a base `ViewHolder`, a shared `Fragment`) |
+
+Rule of thumb: interfaces model "**can do**" (multiple inheritance of behavior, no shared state); abstract classes model "**is a**" with shared, mutable implementation. Since Kotlin interfaces already carry default method bodies, the practical dividing line is almost entirely about **state and constructors** — the moment you need a field with real storage, a `protected` member, or constructor-time validation, you need a class.
+
 ---
 
 ## Smart casts & contracts
@@ -560,3 +594,11 @@ Each state needs different data (`Success` a list, `Error` a message+cause, `Loa
 **6. How does `reified` defeat type erasure, and what's the cost?**
 `reified` is only allowed on `inline` function type parameters. Because the function body is inlined into each call site, the compiler substitutes the concrete type there, so `T::class` and `is T` become real runtime operations. The cost: it must be `inline` (code duplicated per call site, so no huge bodies), it can't be recursive, and you can't capture `T` as a stored value or reference the function without inlining.
 *Follow-up:* Why can't a normal generic function do `x is T`? — JVM erasure removes the type argument at runtime; a non-inline function has no way to recover `T`, so the check is meaningless and the compiler rejects it (only `is List<*>` is allowed).
+
+**7. Why does naive string concatenation in a loop become O(n²), and how does Kotlin avoid it for a single template?**
+`String` is immutable, so `s += x` on a `var s: String` allocates a new `String` every iteration, copying everything built so far — N iterations each copying O(n) bytes is O(n²) total. A single string template (`"$a$b$c"`) compiles to one `StringBuilder`/`invokedynamic` call, not N concatenations, because the compiler batches the whole expression at once. The loop case is different: it's N *separate* expressions, one per iteration, each producing its own throwaway builder.
+*Follow-up:* When does `buildString { }` matter over a raw `StringBuilder`? — Purely style; it's a scoped builder (lambda receiver) that returns `.toString()` for you, with the same allocation profile.
+
+**8. When do you reach for an abstract class instead of an interface, given Kotlin interfaces already support default methods?**
+The moment you need constructor-time invariants, `protected` members, or real stored state shared by subclasses — none of which an interface can hold. If it's purely a capability multiple unrelated types can satisfy with no shared state, an interface is more flexible: multiple inheritance, and it can be layered onto an existing class hierarchy.
+*Follow-up:* Can a class implement an interface and extend an abstract class at once? — Yes: single abstract-class inheritance plus any number of interfaces; the diamond-resolution rule (`super<T>`) still applies if both provide a default for the same member.
