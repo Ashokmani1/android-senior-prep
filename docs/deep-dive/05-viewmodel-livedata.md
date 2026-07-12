@@ -575,3 +575,50 @@ val state by vm.state.collectAsStateWithLifecycle()
 **Answer.** Use the `CreationExtras`-based `ViewModelProvider.Factory.create(modelClass, extras)` overload. Define a `CreationExtras.Key` for the runtime arg, populate a `MutableCreationExtras` at the call site (via `extrasProducer` in `viewModels()`), and read it in the factory alongside `extras.createSavedStateHandle()`. With Hilt this is the `@HiltViewModel(assistedFactory = ...)` + `@AssistedInject`/`@Assisted` pattern — Hilt generates a `CreationExtras`-aware factory and you call `factory.create(id)`.
 
 *Follow-up: Why not just pass the id into the constructor via a plain custom factory?* You can, but then that ViewModel's scope caches the *first* id under the default key — navigating to a different item returns the stale instance unless you also vary the key. `CreationExtras`/assisted injection keeps DI wiring and per-instance args cleanly separated, and pairs correctly with `SavedStateHandle` so the id survives process death.
+
+!!! question "7. Is the ViewModel's `onCleared()` method a user-defined function or an override? When is it executed?"
+    **Answer.** It is an **override** of a protected method inside the platform's `androidx.lifecycle.ViewModel` class. You override it to release custom resources, cancel non-`viewModelScope` threads, or detach long-lived listeners that are not lifecycle-aware.
+    It is executed **exactly once** when the associated `ViewModelStore` is cleared. This happens when the hosting `ViewModelStoreOwner` is permanently finished (e.g., the Activity is closed or finished, the Fragment is detached or popped from the backstack, or the Navigation BackStackEntry is popped) — **not** on configuration changes (rotation).
+
+!!! question "8. What is the difference between a ViewModel and a Kotlin `object` (Singleton) class, and why shouldn't we use singletons for screen state?"
+    **Answer.** While both survive configuration changes (rotation), their lifetimes and scoping are fundamentally different:
+    *   **ViewModel:** Tied to a specific lifecycle owner (Activity/Fragment). It is automatically cleaned up via `onCleared()` when the screen is destroyed, and multiple instances can exist (e.g., if you open two detail screens, each gets its own ViewModel instance). It survives configuration changes, but dies on process death (unless rehydrated via `SavedStateHandle`).
+    *   **Kotlin `object` (Singleton):** Tied to the global application process lifetime. It is never automatically cleared, exists as a single instance for the entire app run, and survives as long as the process is alive.
+    *   **Why not use singletons for screen state:**
+        1.  **Memory Leaks:** If a singleton stores references to views, contexts, or listeners, it holds them forever, leaking the entire Activity/View hierarchy.
+        2.  **State Pollution:** Navigating away and returning to a screen retains the old state, requiring manual resets.
+        3.  **No Multi-Instance Support:** Opening two instances of the same feature will clobber each other's data since they share the same singleton instance.
+
+!!! question "9. Can you update LiveData values from a background thread (like `Dispatchers.IO`), and what happens if you call `setValue()` there?"
+    **Answer.** You **cannot** update LiveData using `setValue()` on a background thread. Doing so throws an **`IllegalStateException: Cannot invoke setValue on a background thread`**. 
+    To update LiveData off-main:
+    1.  Use **`postValue()`** from any thread. It posts a runnable to the main thread's message queue to update the value asynchronously.
+    2.  Alternatively, switch the coroutine context to the main thread using `withContext(Dispatchers.Main)` and call `setValue()` (represented as `.value = newValue` in Kotlin).
+    *   *Trap:* `postValue()` coalesces updates; if you call `postValue()` 5 times rapidly before the main handler executes, observers only receive the last value. Switching to `Dispatchers.Main` and calling `setValue()` guarantees every single emission is delivered.
+
+!!! question "10. While calling `viewModelScope.launch { }`, which dispatcher does it execute on by default, and why?"
+    **Answer.** It executes on **`Dispatchers.Main.immediate`** by default.
+    Google chose the main dispatcher as the default because the primary job of a ViewModel is to orchestrate UI state updates, which must occur on the main thread. By default, any code inside `launch { }` starts executing immediately on the main thread without delay (using `.immediate` avoids posting a message to the handler loop if the caller is already on the main thread). If the ViewModel needs to do background work (I/O, database access, parsing), it delegates that to the data layer/repositories which switch dispatchers locally using `withContext(Dispatchers.IO)`.
+
+!!! question "11. CustomView vs. Fragment: when would you implement a modular form by extending a ViewGroup (like `LinearLayout`) vs. creating a `Fragment`?"
+    **Answer.** Choose based on scope, lifecycle needs, and navigation:
+    *   **CustomView (Extending ViewGroup):** Use for reusable, self-contained UI widgets (like a custom input field, a credit card layout, or a login form embedded inside multiple screens) that do not need independent backstack navigation.
+        *   *Pros:* Extremely lightweight, no FragmentManager transaction overhead, faster rendering, no lifecycle state-machine complexity.
+        *   *Cons:* Does not survive configuration changes automatically (must override `onSaveInstanceState`/`onRestoreInstanceState`), lacks a built-in `LifecycleOwner` to observe LiveData/Flows directly without passing one in.
+    *   **Fragment:** Use for complete sub-screens, tabbed pages, or flows that require their own backstack integration, lifecycle awareness, or DI scopes (like `@AndroidEntryPoint` in Hilt).
+        *   *Pros:* Has its own `LifecycleOwner` (and `viewLifecycleOwner`), handles configuration changes via ViewModel/SavedState, integrates with the Navigation Component.
+        *   *Cons:* Slower instantiation, high memory and class-loader overhead, complex lifecycle (`onCreateView` -> `onDestroyView` mismatch).
+
+!!! question "12. In MVP (Model-View-Presenter), what happens to the Presenter if the Activity/Fragment is destroyed? How does this lead to memory leaks, and how does MVVM solve this?"
+    **Answer.** In MVP, the Presenter holds a direct reference to the View interface (which the Activity/Fragment implements). When the Activity/Fragment is destroyed (e.g., during rotation or on finish), if the Presenter is performing background work or is not properly detached:
+    1.  **Memory Leak:** The Presenter keeps a strong reference to the View, preventing the GC from reclaiming the entire destroyed Activity, its View tree, and its associated resources/bitmaps.
+    2.  **Post-Destruction Crash:** If a background task completes and the Presenter calls a method on the view (e.g., `view.showLoading(false)`), it throws a `NullPointerException` or crashes the app since the view's backing context is dead.
+    *   **How MVVM solves this:** MVVM utilizes the **Observer Pattern**. The ViewModel exposes observable data streams (`StateFlow`/`LiveData`) and **never** holds a reference to the View. When the View is destroyed, the observer is automatically detached (in LiveData) or cancelled (via `viewLifecycleOwner.lifecycleScope`), ensuring the ViewModel never references a dead UI context.
+
+!!! question "13. What is the difference between FragmentTransaction's `add()` and `replace()` methods, and when does `addToBackStack()` keep the outgoing fragment alive?"
+    **Answer.** They differ in how they affect the outgoing fragment's view and lifecycle:
+    *   **`add()`:** Pushes the new Fragment into the container. The existing Fragment in the container is **unaffected**—its view is not destroyed, its lifecycle states do not change, and it remains active. Both fragments now exist on top of each other.
+    *   **`replace()`:** Removes all existing Fragments in the container first, then adds the new one. 
+    *   **`addToBackStack()` behavior:**
+        *   If you call `replace().addToBackStack()`: The outgoing Fragment is removed from the container and goes down to **`onDestroyView`** (its view is destroyed, releasing its graphics/resources), but **not** `onDestroy` or `onDetach`. Its instance is kept alive on the back stack. Pressing back recreates its view and restores its state.
+        *   If you call `replace()` **without** `addToBackStack()`: The outgoing Fragment is fully destroyed (`onDestroy`) and detached (`onDetach`) from the Activity, and its instance is garbage collected.
