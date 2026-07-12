@@ -1,0 +1,105 @@
+site_name: Android Senior & Lead Interview Kit
+site_description: Architecture, modularization, system design, and leadership prep for Senior/Lead Android interviews.
+site_author: Ashok
+copyright: Personal interview-prep knowledge base.
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - def_list
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.keys
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+extra:
+  generator: false
+
+# ── Navigation ───────────────────────────────────────────────
+# To add a NEW topic later: create docs/<topic>/index.md and add a
+# top-level entry below. Each topic is self-contained.
+nav:
+  - Home: index.md
+  - Prep Strategy:
+      - prep-strategy/index.md
+      - How to Clear the Loop: prep-strategy/how-to-clear.md
+      - 4-Week Plan: prep-strategy/study-plan.md
+  - Architecture:
+      - architecture/index.md
+      - Clean Architecture: architecture/clean-architecture.md
+      - MVVM · MVI · UDF: architecture/patterns.md
+      - State & Error Modeling: architecture/state-and-errors.md
+      - Interview Q&A: architecture/questions.md
+  - Modularization:
+      - modularization/index.md
+      - Strategy & Module Graph: modularization/strategy.md
+      - Convention Plugins (build-logic): modularization/convention-plugins.md
+      - DI Across Modules: modularization/di-across-modules.md
+      - Interview Q&A: modularization/questions.md
+  - System Design:
+      - system-design/index.md
+      - A Framework for Mobile SD: system-design/framework.md
+      - "Case: Offline-First & Sync": system-design/case-offline-first.md
+      - "Case: Chat / Feed": system-design/case-chat-feed.md
+      - "Case: Image Loading Pipeline": system-design/case-image-pipeline.md
+      - Interview Q&A: system-design/questions.md
+  - Leadership:
+      - leadership/index.md
+      - Technical Decisions & ADRs: leadership/decisions-adr.md
+      - Behavioral (STAR) Stories: leadership/behavioral-star.md
+      - Interview Q&A: leadership/questions.md
