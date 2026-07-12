@@ -130,19 +130,51 @@ val s = buildString {                    // scoped StringBuilder, returns toStri
 
 - **`Any`** — root of the non-null hierarchy (`Any?` is the true top type). Analogous to `java.lang.Object` but with only `equals`/`hashCode`/`toString`.
 - **`Unit`** — the type with exactly one value, `Unit`. Return type of functions that return nothing meaningful (like `void`), but it is a real object, so it satisfies generics: `Function0<Unit>` works where `void` couldn't.
-- **`Nothing`** — the type with *zero* values; the bottom type, a subtype of every type. A function returning `Nothing` never returns normally (it throws or loops forever).
+- **`Nothing`** – The type with *zero* instances. It is Kotlin's **bottom type**, which sits at the very bottom of the type hierarchy and is a subtype of all other types (including non-nullable and nullable types). A function that returns `Nothing` can **never return normally** – it either throws an exception or enters an infinite loop.
 
-`Nothing` matters for control-flow typing. Because it is a subtype of everything, `throw` and `return` unify into any expression:
-
+#### 1. Function That Never Completes Normally
+A function designed to terminate execution with an exception or loop forever should explicitly return `Nothing`:
 ```kotlin
-fun fail(msg: String): Nothing = throw IllegalStateException(msg)
+fun failWithValidation(msg: String): Nothing {
+    throw IllegalArgumentException("Validation failed: $msg")
+}
 
-val name: String = user.name ?: fail("no name")  // type-checks: Nothing <: String
+fun runInfiniteGameLoop(): Nothing {
+    while (true) {
+        processInput()
+        render()
+    }
+}
 ```
 
-It also drives exhaustiveness and smart-casts: after a call returning `Nothing`, the compiler knows code below is unreachable. `emptyList<Nothing>()` typing and `TODO()` (returns `Nothing`) rely on this.
+#### 2. Control Flow & Unreachable Code Smart-Casts
+Because `Nothing` is a subtype of *every* type, you can use expressions returning `Nothing` on the right-hand side of the Elvis operator (`?:`). The compiler smart-casts the left-hand side to a non-null type and knows any subsequent code is unreachable if the Elvis branch is taken:
+```kotlin
+val intentData: String = intent.getStringExtra("UUID") 
+    ?: failWithValidation("UUID is missing from launching intent")
+// Since failWithValidation returns Nothing (Nothing <: String), this type-checks.
+// The compiler knows intentData is guaranteed to be non-null and String below this line.
+```
+
+#### 3. Covariant Generics (Empty Collections)
+Kotlin's read-only collections are covariant (`out T`). Because `Nothing` is a subtype of all types, `Collection<Nothing>` is a subtype of any `Collection<T>`. This allows a single empty list instance to be safely reused across all types:
+```kotlin
+// Public API: public fun <T> emptyList(): List<T> = EmptyList
+// EmptyList is a List<Nothing>. Since Nothing <: String and List is covariant:
+val stringList: List<String> = emptyList() // List<Nothing> <: List<String>
+val intList: List<Int> = emptyList()       // List<Nothing> <: List<Int>
+```
+
+#### 4. The Built-in `TODO()` helper
+The standard library defines `TODO()` as returning `Nothing`, allowing it to stand in as a placeholder anywhere in your code without triggering compiler errors for missing return values:
+```kotlin
+fun calculateCompoundInterest(principal: Double, rate: Double): Double {
+    TODO("Math calculations are not implemented yet") // Compiles fine without returning a Double
+}
+```
 
 ---
+
 
 ## `val` vs `var`, immutability, `const`
 
