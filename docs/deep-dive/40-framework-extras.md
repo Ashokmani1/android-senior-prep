@@ -395,4 +395,54 @@ AOSP is built on standard OOP design patterns:
 5.  **BlockCanary**: An integration library that tracks execution times in `Looper.loop()`'s logging hooks, automatically logging a stack trace whenever a single message dispatch exceeds a set threshold (e.g., 200 ms).
 **Follow-up:** *Why does the OS allow exactly 5 seconds for ANRs?* — To give the main thread a reasonable window to recover from transient blocking tasks (like a slow binder transaction or garbage collection pause) while ensuring the app does not appear frozen to the user indefinitely.
 
+**Q16. Explain the internal loop of `Looper.loop()`. Why doesn't its infinite loop cause 100% CPU lock or trigger an Out of Memory (OOM) exception?**
+:   The infinite loop in `Looper.loop()` (which contains a `for (;;)` block) is designed to run forever but consumes **0% CPU cycles** when idle due to Linux's **`epoll`** (event poll) mechanism.
+    
+    1.  **Thread Blocking (`nativePollOnce`):** When the `Looper` calls `queue.next()`, it executes a native JNI call `nativePollOnce(ptr, nextPollTimeoutMillis)`.
+    2.  **Linux `epoll` system call:** Under the hood, this delegates to the Linux kernel `epoll_wait()` system call on a file descriptor associated with the thread's message queue.
+    3.  **Kernel Sleep:** If the queue is empty, the OS puts the thread into a deep sleep state, reclaiming the CPU core's execution slice for other active processes.
+    4.  **Wakeup Trigger:** When another thread posts a message to this Handler or a hardware input event (touch, key) arrives, the system writes to the file descriptor (`write()` system call). This triggers the kernel to wake the thread up. The loop wakes up, processes the message, and goes back to sleep.
+    *   **Why no OOM:** Out of Memory occurs when heap allocations accumulate and exceed available RAM. Running a loop does not allocate heap objects unless the executed runnables allocate and leak objects. The stack frames created for each message dispatch are immediately popped off the call stack when the task returns, keeping memory stable.
+
+**Q17. Trace the entire app opening process from a user clicking the launcher icon to the first frame render. How are process, threads, and RAM allocated?**
+:   The application launch sequence operates in six distinct phases:
+    
+    1.  **Icon Click & Binder request:** The Launcher calls `startActivity(intent)`, which marshals the request via Binder IPC to the **`ActivityTaskManagerService` (ATMS)** running inside the system server process (`system_server`).
+    2.  **Zygote socket request:** ATMS checks if the application's process is already running. If it is a cold start, ATMS sends a socket command (`/dev/socket/zygote`) to the **`Zygote`** process requesting it to fork a new process.
+    3.  **Zygote Forking & Copy-on-Write RAM:** Zygote receives the request and calls the Linux system command `fork()`. The new process inherits Zygote’s preloaded JVM heap, standard SDK classes, and shared resources in RAM. Thanks to Linux **Copy-on-Write (COW)** optimization, the child process shares Zygote's RAM pages until it mutates them, dramatically reducing physical RAM footprint and startup times.
+    4.  **ActivityThread Initialization:** The new process launches its UI thread and executes **`ActivityThread.main()`**. This method:
+        *   Prepares the main looper: `Looper.prepareMainLooper()`.
+        *   Instantiates the main `ActivityThread` controller.
+        *   Attaches the application back to the `ActivityManagerService` (AMS) via Binder IPC (`attachApplication()`).
+        *   Calls `Looper.loop()` to begin the main thread's event loop.
+    5.  **Binding Application & Providers:** AMS sends the application configuration back. The child thread loads the APK, instantiates the `Application` class, executes `Application.attachBaseContext(context)`, initializes all declared **`ContentProvider`s** (calling their `onCreate()`), and finally executes `Application.onCreate()`.
+    6.  **Activity Launch & VSYNC drawing:** AMS schedules the activity launch. The main thread's handler instantiates the `Activity` class, calls `onCreate()` -> `setContentView()` (inflating the XML tree), and triggers `onStart()` -> `onResume()`. When the Activity is resumed, it registers a draw request with `Choreographer` which syncs with the next VSYNC pulse to measure, layout, and draw the first frame.
+
+**Q18. How much memory is allocated to an Android application by default, and how does `android:largeHeap="true"` affect it internally?**
+:   The default heap size limit allocated to an app process is configured by the device manufacturer in the system's `build.prop` file:
+    
+    *   **`dalvik.vm.heapgrowthlimit`:** The default maximum heap size for a standard application process (typically ranges from 64MB to 256MB, depending on the device's physical RAM).
+    *   **`dalvik.vm.heapsize`:** The absolute maximum heap size accessible to a process that requests a large heap (typically 256MB to 512MB+).
+    *   **`android:largeHeap="true"`:** Toggling this flag in the `<application>` tag of the Manifest instructs the ART/Dalvik virtual machine to bypass the `heapgrowthlimit` constraint and expand up to the full `heapsize` limit.
+    *   **The Trap:** Using `largeHeap` is a red flag during senior design reviews because:
+        1.  It is a workaround for poor memory management (like caching uncompressed Bitmaps in memory).
+        2.  Garbage Collection (GC) pause times scale with the size of the heap; a larger heap means GC pauses can take longer, leading to dropped frames (jank).
+        3.  It wastes system-wide physical RAM, increasing the chance of other background processes being killed by the Low Memory Killer (LMK).
+
+**Q19. Explain the internals of unit testing frameworks: how do Mockito and Espresso synchronize and execute tests under the hood?**
+:   Mockito and Espresso operate on fundamentally different concepts:
+    
+    *   **Mockito Internals (Mocking/Spying):**
+        *   **Dynamic Bytecode Generation:** Mockito uses **Byte Buddy** to generate a subclass of the target class at runtime.
+        *   **Invocation Interception:** The generated subclass overrides all methods. When you call a mock method, the invocation is routed to Mockito's internal interceptor, which matches the arguments against registered stub rules (e.g., `when(...)` or `thenAnswer(...)`) and returns the configured value or records the invocation for verification (`verify(...)`).
+        *   **Spy vs. Mock:** A Mock is a completely empty shell (all methods return defaults like null or false unless stubbed). A Spy wraps a real instance; the generated subclass delegates to the real methods unless explicitly stubbed (`doReturn().when(spy).method()`).
+    *   **Espresso Internals (UI Testing & Synchronization):**
+        *   **UI Thread Synchronization:** Espresso queries the main thread's `MessageQueue` and `AsyncTasks` pool before executing assertions or actions. It blocks the test thread and **waits until the main thread is completely idle** (no active messages or pending tasks) to guarantee tests do not fail due to timing flakiness.
+        *   **IdlingResource:** If the app executes background tasks via custom thread pools or network layers (like Retrofit/OkHttp), Espresso's default loop-monitoring cannot see them. You must register custom **`IdlingResource`** objects. These notify Espresso when a background task starts (incrementing a counter) and completes (decrementing to 0), telling Espresso to wait before continuing the test.
+        *   **Three-step cycle:**
+            1.  `onView()` resolves a `ViewMatcher` to find a view in the active view hierarchy.
+            2.  `perform()` executes a `ViewAction` (like clicking or typing) on the UI thread.
+            3.  `check()` executes a `ViewAssertion` to verify the state.
+
+
 

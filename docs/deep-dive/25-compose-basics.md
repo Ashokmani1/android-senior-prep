@@ -681,3 +681,17 @@ fun Map(latLng: LatLng) {
     
     **Follow-up:** *Where can Compose perform worse than XML if not optimized?* — (1) During **initial composition** (which has startup cost as the slot table is allocated), and (2) during debug builds (Compose relies heavily on compiler optimizations like strong skipping, R8 code stripping, and outline generation, so debug performance is noticeably slower than release).
 
+!!! question "8. Walk me through the different side-effect APIs in Jetpack Compose, their internal differences, and when to use each."
+    **Answer:** Compose side-effects are structured hooks to safely perform actions that escape a composable's pure-function boundary. They differ in timing, scope, and key tracking:
+    
+    1.  **`LaunchedEffect(keys)` (Coroutine/Async):** Launches a coroutine scoped to the composition lifecycle. It starts when entering composition, cancels and restarts when any `key` changes, and cancels when leaving composition. Use for network calls, animations, or collecting state flows.
+    2.  **`DisposableEffect(keys)` (Non-Coroutine/Cleanup):** Similar to `LaunchedEffect` but runs non-suspending setup code and **forces** you to provide an `onDispose { }` block. It executes its cleanup when keys change or the composable leaves composition. Use for adding/removing listeners, registering callbacks, or binding resources.
+    3.  **`rememberCoroutineScope()` (Event-driven Coroutine):** Returns a CoroutineScope bound to the composition. It does *not* launch a coroutine automatically; you call `.launch { }` inside standard callback listeners (like a button's `onClick`). Use when asynchronous operations are triggered by user actions rather than composition entry.
+    4.  **`SideEffect` (Compose-to-Non-Compose):** Executes its block on **every successful recomposition** (after state writes are committed to the screen). Use to publish internal Compose states to non-Compose systems (like a Firebase tracker or a legacy view manager).
+    5.  **`rememberUpdatedState(value)` (Keep reference fresh):** Creates a stable wrapper state pointing to the latest `value`. If a long-running effect (like a 5-second network request in `LaunchedEffect`) needs to read a parameter that might change *without* restarting the effect, wrap it in `rememberUpdatedState` so the effect reads the updated reference directly.
+    6.  **`derivedStateOf { }` (Reduce recompositions):** Wraps a calculation that reads other state parameters. It caches the calculation result and only invalidates observers when the *final calculated value* changes, avoiding excessive recompositions from high-frequency updates (e.g., scroll positions).
+    7.  **`produceState(initialValue, keys)` (Non-Compose to Compose):** Syntactic sugar over `LaunchedEffect` that exposes a `produceState` helper to convert external callbacks, flows, or listeners into a Compose `State<T>` wrapper.
+    
+    **Follow-up:** *What is the risk of using a hardcoded `LaunchedEffect(Unit)` or `LaunchedEffect(true)`?* — The coroutine will only run once upon entering composition and will never restart, even if the values it reads inside the block change. This can lead to stale state bugs; only use `Unit` when the operation is genuinely a one-shot task (like showing a splash screen).
+
+

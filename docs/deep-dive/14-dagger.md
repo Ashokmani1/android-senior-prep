@@ -495,4 +495,15 @@ So Hilt is **not a different DI system** — it's opinionated Dagger with the co
         *   Initializes these fields in a private `initialize(...)` method (wrapping scoped providers in `DoubleCheck` wrappers).
         *   Implements the interface's provision methods by delegating to the cached factories (`get()`), or calls the generated `MembersInjector` inside target injection methods.
 
+!!! question "7. Dagger 1 vs Dagger 2 — how did they differ internally, and why did Google rewrite Dagger?"
+    **Answer:** Dagger 1 (created by Square) and Dagger 2 (forked and rewritten by Google) are fundamentally different in execution and validation:
+    
+    1.  **Dagger 1 (Reflection-based at Runtime):** Dagger 1 performed graph validation at compile time, but it built the actual dependency graph at runtime using **Java reflection**. This meant that class loading, field injection, and object construction required reflective lookups, which degraded startup performance and memory layout on resource-constrained Android devices.
+    2.  **Dagger 2 (100% Compile-Time Code Generation):** Google rewrote Dagger to eliminate runtime reflection. Dagger 2 generates standard, concrete Java code (`DaggerAppComponent`, `Class_Factory`, etc.) that performs normal constructor and member injection.
+    3.  **No Object Graphs:** Dagger 1 used an `ObjectGraph` class at runtime. Dagger 2 replaces this with compile-time generated `@Component` implementations.
+    4.  **Error Surface:** Because Dagger 2 generates code at compile time, any missing or cyclic dependency results in a compiler build failure. In Dagger 1, some invalid graph configurations would build successfully but throw crashes at runtime.
+    
+    *Follow-up:* Why is Dagger 2 preferred for Android? — By generating direct Java calls, Dagger 2 is trace-friendly (you can set breakpoints inside the generated code and step through it) and incurs **zero runtime CPU/reflection overhead**, making app startup significantly faster.
+
+
 
