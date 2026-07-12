@@ -79,27 +79,82 @@ nav:
       - prep-strategy/index.md
       - How to Clear the Loop: prep-strategy/how-to-clear.md
       - 4-Week Plan: prep-strategy/study-plan.md
-  - Architecture:
-      - architecture/index.md
-      - Clean Architecture: architecture/clean-architecture.md
-      - MVVM · MVI · UDF: architecture/patterns.md
-      - State & Error Modeling: architecture/state-and-errors.md
-      - Interview Q&A: architecture/questions.md
-  - Modularization:
-      - modularization/index.md
-      - Strategy & Module Graph: modularization/strategy.md
-      - Convention Plugins (build-logic): modularization/convention-plugins.md
-      - DI Across Modules: modularization/di-across-modules.md
-      - Interview Q&A: modularization/questions.md
-  - System Design:
-      - system-design/index.md
-      - A Framework for Mobile SD: system-design/framework.md
-      - "Case: Offline-First & Sync": system-design/case-offline-first.md
-      - "Case: Chat / Feed": system-design/case-chat-feed.md
-      - "Case: Image Loading Pipeline": system-design/case-image-pipeline.md
-      - Interview Q&A: system-design/questions.md
-  - Leadership:
-      - leadership/index.md
-      - Technical Decisions & ADRs: leadership/decisions-adr.md
-      - Behavioral (STAR) Stories: leadership/behavioral-star.md
-      - Interview Q&A: leadership/questions.md
+  - Senior Rounds:
+      - Architecture:
+          - architecture/index.md
+          - Clean Architecture: architecture/clean-architecture.md
+          - MVVM · MVI · UDF: architecture/patterns.md
+          - State & Error Modeling: architecture/state-and-errors.md
+          - Interview Q&A: architecture/questions.md
+      - Modularization:
+          - modularization/index.md
+          - Strategy & Module Graph: modularization/strategy.md
+          - Convention Plugins (build-logic): modularization/convention-plugins.md
+          - DI Across Modules: modularization/di-across-modules.md
+          - Interview Q&A: modularization/questions.md
+      - System Design:
+          - system-design/index.md
+          - A Framework for Mobile SD: system-design/framework.md
+          - "Case: Offline-First & Sync": system-design/case-offline-first.md
+          - "Case: Chat / Feed": system-design/case-chat-feed.md
+          - "Case: Image Loading Pipeline": system-design/case-image-pipeline.md
+          - Interview Q&A: system-design/questions.md
+      - Leadership:
+          - leadership/index.md
+          - Technical Decisions & ADRs: leadership/decisions-adr.md
+          - Behavioral (STAR) Stories: leadership/behavioral-star.md
+          - Interview Q&A: leadership/questions.md
+  - Core Android Deep Dive:
+      - deep-dive/index.md
+      - "Phase 1 · Core Components":
+          - "M1 · Activity Internals": deep-dive/01-activity.md
+          - "M2 · Fragment Internals": deep-dive/02-fragment.md
+      - "Phase 2 · View & Rendering":
+          - "M3 · View System Internals": deep-dive/03-view-system.md
+          - "M4 · RecyclerView Mastery": deep-dive/04-recyclerview.md
+      - "Phase 3 · Architecture Components":
+          - "M5 · ViewModel & LiveData": deep-dive/05-viewmodel-livedata.md
+          - "M6 · Data & View Binding": deep-dive/06-binding.md
+          - "M7 · Room Database": deep-dive/07-room.md
+          - "M8 · DataStore": deep-dive/08-datastore.md
+          - "M9 · Paging 3": deep-dive/09-paging.md
+      - "Phase 4 · Networking":
+          - "M10 · Retrofit & OkHttp": deep-dive/10-retrofit.md
+          - "M11 · Networking Advanced": deep-dive/11-networking-advanced.md
+      - "Phase 5 · Coroutines & Flow":
+          - "M12 · Coroutines Internals": deep-dive/12-coroutines.md
+          - "M13 · Flow Internals": deep-dive/13-flow.md
+      - "Phase 6 · Dependency Injection":
+          - "M14 · Dagger Internals": deep-dive/14-dagger.md
+          - "M15 · Hilt": deep-dive/15-hilt.md
+      - "Phase 7 · Background Processing":
+          - "M16 · Services": deep-dive/16-services.md
+          - "M17 · WorkManager Internals": deep-dive/17-workmanager.md
+          - "M18 · BroadcastReceiver": deep-dive/18-broadcast-receiver.md
+          - "M19 · ContentProvider": deep-dive/19-contentprovider.md
+          - "M20 · AlarmManager & JobScheduler": deep-dive/20-alarm-jobscheduler.md
+      - "Phase 8 · Advanced Android":
+          - "M21 · Navigation Component": deep-dive/21-navigation.md
+          - "M22 · Permissions": deep-dive/22-permissions.md
+          - "M23 · Storage": deep-dive/23-storage.md
+          - "M24 · Security": deep-dive/24-security.md
+          - "M25 · Compose Basics": deep-dive/25-compose-basics.md
+      - "Phase 9 · System & Internals":
+          - "M26 · Android Architecture": deep-dive/26-android-architecture.md
+          - "M27 · Memory Management": deep-dive/27-memory.md
+          - "M28 · App Rendering": deep-dive/28-rendering.md
+          - "M29 · Context Deep Dive": deep-dive/29-context.md
+          - "M30 · Android Manifest": deep-dive/30-manifest.md
+      - "Phase 10 · Library Internals":
+          - "M31 · Coil / Image Loading": deep-dive/31-coil.md
+          - "M32 · JSON Parsing": deep-dive/32-json.md
+      - "Phase 11 · Performance & Testing":
+          - "M33 · Performance Optimization": deep-dive/33-performance.md
+          - "M34 · Testing": deep-dive/34-testing.md
+      - "Phase 12 · Build & Deployment":
+          - "M35 · Gradle": deep-dive/35-gradle.md
+          - "M36 · App Distribution": deep-dive/36-distribution.md
+      - "Extras":
+          - "M37 · Material Components": deep-dive/37-material.md
+          - "M38 · Firebase": deep-dive/38-firebase.md
+          - "M39 · Advanced Topics": deep-dive/39-advanced.md
