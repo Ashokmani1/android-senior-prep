@@ -48,6 +48,31 @@ Doze (API 23+) is the reason exact alarms are hard. When the screen is off, unpl
 - `setExactAndAllowWhileIdle()` / `setAndAllowWhileIdle()` → allowed to fire in Doze, **but throttled** to roughly once every 9 minutes per app.
 - `setAlarmClock()` → exempt; fires on time (and briefly brings the device out of Doze before it fires).
 
+### Inside `AlarmManagerService`
+
+The API is a thin `Binder` proxy; the scheduling logic lives in the system-server component `AlarmManagerService`. Understanding it explains *why* `set()` is inexact and *why* alarms coalesce.
+
+**One kernel timer, not one timer per alarm.** The service does not arm a hardware timer per pending alarm — that wouldn't scale to thousands of alarms across all apps, and every fire would be a wakeup. Instead it keeps an in-memory list of `Alarm` objects grouped into `Batch`es. A `Batch` has a `[start, end]` **delivery window**; two alarms whose windows overlap are merged into one batch, so they fire together on a single wakeup. The service arms the kernel for **only the earliest batch**, via a single file descriptor:
+
+- On modern kernels it's a `timerfd` (one per clock type); older devices used the `/dev/alarm` driver. A native thread blocks in a `read()`/`ioctl` on that fd; when the kernel timer expires the read returns, the service wakes, delivers every alarm in the fired batch, then re-arms the fd for the next batch's start time.
+- `RTC`/`RTC_WAKEUP` are armed against `CLOCK_REALTIME`; `ELAPSED_REALTIME*` against `CLOCK_BOOTTIME` (which keeps counting through suspend). That is the concrete reason the two clock families behave differently across reboot and clock changes — they are literally different kernel clocks.
+- The `*_WAKEUP` variants arm a wakeup-capable timer that pulls the SoC out of suspend; the non-wakeup variants arm a timer that only fires when the device is already awake, so they get folded into the next natural wakeup.
+
+**Why `set()` is inexact.** Because batching is the whole point: giving each alarm a window lets `AlarmManagerService` line up unrelated apps' alarms into one wakeup instead of N. `set()` hands the OS a wide window; `setWindow()` lets you pick the tolerance; `setExact*()` collapses the window to a point (a batch of one), which is why exact alarms cost battery and are permission-gated.
+
+```mermaid
+flowchart TD
+    A["App: set() / setExact*()"] --> S["AlarmManagerService"]
+    S --> B["Coalesce into Batches<br/>(overlapping delivery windows)"]
+    B --> K["Arm ONE kernel timer<br/>timerfd, earliest batch only"]
+    D["DeviceIdleController<br/>(Doze state)"] -. "gates delivery to<br/>maintenance windows" .-> S
+    K --> W["Kernel fires → native thread wakes"]
+    W --> DEL["Deliver every alarm in the batch<br/>(PendingIntent / OnAlarmListener)"]
+    DEL --> RE["Re-arm timerfd for next batch"]
+```
+
+**`DeviceIdleController` is the Doze gate.** Doze isn't implemented inside `AlarmManagerService`; it's driven by `DeviceIdleController`, which tracks the idle state machine (ACTIVE → IDLE_PENDING → IDLE → IDLE_MAINTENANCE). While the device is IDLE it tells `AlarmManagerService` to hold back non-allowlisted batches; during a **maintenance window** it releases them. `*AllowWhileIdle` alarms are placed on an allowlist that pierces IDLE but is rate-limited (the ~9-minute throttle), and `setAlarmClock()` alarms are exempt entirely. This is why "deferred until the next maintenance window" is the exact behavior, not a vague description.
+
 ### Exact-alarm permission (Android 12+/13+)
 
 Google clamped down on exact alarms because they wake the device and drain battery. From **Android 12 (API 31)**:
@@ -194,6 +219,40 @@ The three contract traps seniors are expected to nail:
 
 `JobParameters` carries `jobId`, the `PersistableBundle`/`Bundle` extras, the triggered content URIs (for content-observer jobs), and `stopReason` (API 31+ tells you *why* you were stopped — timeout, constraint lost, app standby, user action).
 
+### Inside `JobSchedulerService`
+
+The `JobScheduler` you call is a `Binder` proxy; the engine is `JobSchedulerService` in system-server. It's the framework-side parallel to WorkManager's constraint trackers — in fact WorkManager's `SystemJobService` schedules through this very service on API 23+.
+
+**Every scheduled job becomes a `JobStatus`.** When you call `schedule(JobInfo)`, the service wraps your `JobInfo` in a `JobStatus` object that holds the constraints plus the live "satisfied" bookkeeping. Persisted jobs (`setPersisted(true)`) are written by `JobStore` to `/data/system/job/jobs.xml`, which is why they survive reboot — on boot the service reads `jobs.xml` back into memory and re-evaluates every `JobStatus`.
+
+**Readiness is a bank of constraint bits, one per controller.** The service doesn't poll. It registers each `JobStatus` with a set of `StateController` singletons, each of which owns one constraint and flips a **constraint-satisfied bit** on the `JobStatus` when the device state changes:
+
+| Controller | Constraint it tracks | Flipped by |
+|---|---|---|
+| `ConnectivityController` | `setRequiredNetworkType` (any / unmetered / not-roaming) | `ConnectivityManager` network callbacks |
+| `BatteryController` | `setRequiresCharging`, battery-not-low | charging / battery broadcasts |
+| `IdleController` | `setRequiresDeviceIdle` | screen-off / dream / Doze idle signals |
+| `TimeController` | `setMinimumLatency`, `setOverrideDeadline` | an alarm the service sets for the next deadline |
+| `StorageController` | `setRequiresStorageNotLow` | storage-low / storage-ok broadcasts |
+| `QuotaController` | App-Standby-bucket execution quota (API 28+) | usage/bucket changes + a running quota tally |
+
+A job is **ready to run only when *all* of its controllers report satisfied** — the service AND-reduces the constraint bits. As controllers flip bits, the service re-checks affected jobs and dispatches the ready ones (subject to a max-concurrent-jobs cap) by binding to your `JobService` and calling `onStartJob`.
+
+```mermaid
+flowchart LR
+    JS["JobStatus<br/>(wraps JobInfo)"]
+    C1["ConnectivityController"] --> B["Constraint-satisfied bits<br/>(AND-reduced)"]
+    C2["BatteryController"] --> B
+    C3["IdleController"] --> B
+    C4["TimeController"] --> B
+    C5["StorageController"] --> B
+    C6["QuotaController"] --> B
+    JS --- B
+    B -->|all satisfied| RUN["bind JobService → onStartJob"]
+```
+
+**`QuotaController` and the standby buckets.** Since API 28, App Standby sorts each app into a bucket — **active, working-set, frequent, rare, restricted** — and `QuotaController` grants each bucket a shrinking **running-time budget within a sliding window**. A rare-bucket app might get only a few minutes of job execution every several hours; an active app is effectively unthrottled. When a running job exhausts its quota (or the standard ~10-minute per-execution window elapses), the service stops it and calls `onStopJob`. On API 31+ the reason is surfaced as a `stopReason` code — e.g. `STOP_REASON_TIMEOUT`, `STOP_REASON_CONSTRAINT_CONNECTIVITY`, `STOP_REASON_QUOTA`, `STOP_REASON_DEVICE_IDLE`, `STOP_REASON_APP_STANDBY`, `STOP_REASON_USER` — so you can log *why* you were interrupted and decide whether to reschedule.
+
 !!! warning "Why you don't write this by hand anymore"
     Raw `JobService` gives you: no built-in threading, manual reboot persistence, no unified chaining, min-SDK 21, and no observable state. **WorkManager wraps all of it** — picks `JobScheduler` on 23+, handles threading via `CoroutineWorker`/`ListenableWorker`, persists across reboot for free, and adds chaining, `LiveData`/`Flow` observation, and expedited work. In 2024+ code, calling `JobScheduler` directly is a smell unless you have a very specific reason (e.g. `TRIGGER_CONTENT_URI` jobs, or you're implementing the library layer itself).
 
@@ -259,3 +318,11 @@ Android 12 (API 31) introduced `SCHEDULE_EXACT_ALARM` as a special app access: d
 **Q5. When would you reach for AlarmManager over WorkManager, and why is calling JobScheduler directly discouraged?**
 Reach for AlarmManager only when work must run at a precise wall-clock instant the user chose — alarm clock, calendar reminder, medication reminder — because it's the only API that wakes the device at an exact time. Everything deferrable (sync, upload, backup, cleanup, periodic refresh) goes to WorkManager, which guarantees eventual execution under constraints and survives reboot. Calling `JobScheduler` directly is discouraged because WorkManager already wraps it on API 23+, adding threading, reboot persistence, chaining, observability, expedited work, and a single API across SDK levels — hand-rolling `JobService` reintroduces bugs (main-thread work, manual persistence) the library already solved.
 *Follow-up: is there any case where you'd still touch JobScheduler directly?* Niche ones: content-URI trigger jobs (`setTriggerContentUri`) that WorkManager doesn't expose as cleanly, or environments where you can't add the Jetpack dependency. Otherwise, no.
+
+**Q6. Inside `JobSchedulerService`, how does the framework decide a job is ready to run, and what role do the controllers and standby buckets play?**
+Each scheduled `JobInfo` is wrapped in a `JobStatus` and registered with a bank of `StateController` singletons — `ConnectivityController`, `BatteryController`, `IdleController`, `TimeController`, `StorageController`, and `QuotaController` — one per constraint. The service is event-driven, not polling: when device state changes (network callback, charging broadcast, deadline alarm), the responsible controller flips a **constraint-satisfied bit** on the `JobStatus`. The job becomes eligible only when the AND of all its bits is true, at which point the service binds your `JobService` and calls `onStartJob`. `QuotaController` additionally enforces the App-Standby bucket budget: the app's bucket (active/working-set/frequent/rare/restricted) sets a running-time allowance within a sliding window, so a rarely-used app gets far less execution time. This is the exact framework-side analog of WorkManager's constraint trackers — and WorkManager's `SystemJobService` schedules through this same service on API 23+.
+*Follow-up: which jobs survive a reboot and how?* Only jobs scheduled with `setPersisted(true)`. `JobStore` serializes them to `/data/system/job/jobs.xml`; on boot the service reloads that file, rebuilds each `JobStatus`, and re-evaluates its constraints. Non-persisted jobs are lost on reboot, exactly like AlarmManager alarms.
+
+**Q7. Explain how `AlarmManagerService` actually delivers alarms — why is `set()` inexact, and how does one kernel timer serve thousands of alarms?**
+`AlarmManagerService` keeps all pending alarms in memory grouped into `Batch`es, where a batch is a set of alarms whose `[start, end]` delivery windows overlap. It arms the kernel for only the **earliest batch** using a single file descriptor — a `timerfd` (or the legacy `/dev/alarm` driver) per clock type — with a native thread blocked on it; when the timer fires, every alarm in that batch is delivered on one wakeup and the fd is re-armed for the next batch. `set()` is inexact precisely because batching is the goal: a wide delivery window lets the service coalesce unrelated apps' alarms into a single wakeup to save battery, whereas `setExact*()` collapses the window to a point (a batch of one). `RTC*` alarms arm `CLOCK_REALTIME` and `ELAPSED_REALTIME*` arm `CLOCK_BOOTTIME`, which is why they diverge across clock changes and reboots. Doze deferral is layered on top by `DeviceIdleController`, which holds back non-allowlisted batches until a maintenance window.
+*Follow-up: how do `setExactAndAllowWhileIdle` and `setAlarmClock` escape Doze at this level?* `DeviceIdleController` keeps an allowlist of alarms permitted to fire during IDLE. `*AllowWhileIdle` alarms are on it but rate-limited (the ~9-minute throttle), so they pierce Doze sparingly; `setAlarmClock()` alarms are fully exempt and even bring the SoC out of suspend just before firing, because they back user-visible alarm-clock UX.

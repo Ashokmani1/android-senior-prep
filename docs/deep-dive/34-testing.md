@@ -131,6 +131,54 @@ assertThat(slot.captured.name).isEqualTo("purchase_completed")
 
 Mockito(-Kotlin) still appears in legacy codebases; the concepts map 1:1 (`whenever(x).thenReturn(y)`, `verify(x).method()`), but on a Kotlin project MockK is the right default.
 
+### How MockK builds a mock (internals)
+
+MockK's headline Kotlin feature — mocking `final` classes with no `open` and no interface —
+comes from two libraries working together, and understanding them explains its failure
+modes.
+
+- **Byte Buddy** generates the proxy. For each `mockk<T>()`, MockK uses **Byte Buddy** to
+  generate a *subclass* of `T` at runtime whose every method is overridden to route into
+  MockK's stubbing/recording machinery instead of the real body. On the JVM, subclassing a
+  `final` class is normally illegal, so MockK installs Byte Buddy's **inline mock maker**,
+  which uses the JVM's instrumentation agent (`Instrumentation.retransformClasses`) to
+  *redefine the loaded class's bytecode* and strip the `final` modifier before subclassing.
+  This is exactly the capability Mockito only gets when you opt into `mock-maker-inline`
+  (the `mockito-inline` artifact); MockK ships it on by default, which is why "just mock the
+  Kotlin class" works with no ceremony.
+- **Objenesis** instantiates it without a constructor. Once the proxy *class* exists, MockK
+  must produce an *instance* — but calling the real constructor could run side-effecting
+  init logic (open a socket, touch Android framework code). So MockK uses **Objenesis**,
+  which allocates the object via JVM-internal reflection (e.g. `sun.reflect`
+  `ReflectionFactory` / `Unsafe.allocateInstance`) **without invoking any constructor**.
+  Fields are left at their JVM defaults (`null`/`0`/`false`); the mock's behavior comes
+  entirely from your `every`/`coEvery` stubs, not from constructor-initialised state.
+
+```kotlin
+// Works because MockK's Byte Buddy inline maker strips `final`, and
+// Objenesis skips FileRepository's constructor entirely (no real file opened):
+class FileRepository(path: String) {        // final, non-trivial constructor
+    private val handle = openFile(path)
+    fun read(id: Int): String = handle.read(id)
+}
+val repo = mockk<FileRepository>()           // no constructor call, no file
+every { repo.read(1) } returns "stubbed"
+```
+
+!!! note "Why `mockkStatic` / `mockkObject` are separate calls"
+    Instance mocks are ordinary subclass proxies. Mocking a **static**/top-level function,
+    a Kotlin **`object`**, or an **extension** function has no instance to subclass, so
+    MockK must *redefine the declaring class's bytecode in place* via the inline maker —
+    hence the distinct `mockkStatic(...)`, `mockkObject(...)`, `mockkConstructor(...)` entry
+    points, and why they should be paired with `unmockk`/`clearMocks` so the retransformed
+    class doesn't leak into later tests.
+
+!!! warning "The inline maker is why MockK can be slow / clash on some CI"
+    Bytecode redefinition needs a self-attaching Java agent. On locked-down JDKs or Android
+    instrumentation runtimes it may fail to attach (`Could not initialize inline mock
+    maker`), and heavy static/object mocking is measurably slower than plain instance
+    mocks — prefer instance mocks and fakes where you can.
+
 ### Mock vs Fake vs Stub
 
 | Type | What it is | Behavior | Verifies interactions? | Senior default |
@@ -286,6 +334,43 @@ fun `debounce emits once after quiet period`() = runTest {
     assertThat(vm.results.value).isNotEmpty()                     // fired at 300ms
 }
 ```
+
+### How the virtual clock actually works
+
+The "virtual time" is not a mock of `System.nanoTime()` — it's a real scheduler. At the
+centre is a single **`TestCoroutineScheduler`**, shared by `runTest`'s `TestScope` and by
+every `TestDispatcher` you create against it. It holds a priority queue of scheduled tasks
+keyed by a `currentTime` counter (a `Long` of virtual milliseconds), not by wall-clock time.
+
+- **`StandardTestDispatcher`** and **`UnconfinedTestDispatcher`** both delegate their
+  `dispatch`/`scheduleResumeAfterDelay` to that scheduler. The difference is purely
+  eagerness: `StandardTestDispatcher` *enqueues* every dispatched continuation onto the
+  scheduler and returns (nothing runs until you advance), whereas `UnconfinedTestDispatcher`
+  runs newly launched coroutines **immediately, in place**, up to their first real
+  suspension — then subsequent resumes still go through the scheduler.
+- **`delay` is skipped, not slept.** `delay(n)` on a test dispatcher calls the scheduler's
+  `scheduleResumeAfterDelay(n, continuation)`, which just registers the continuation at
+  virtual time `currentTime + n`. No timer, no thread parking. When you call
+  `advanceTimeBy(n)`, the scheduler pops every task whose time is `<= currentTime + n`,
+  jumps `currentTime` forward, and resumes them — so a `delay(10_000)` completes in
+  microseconds of real time. `advanceUntilIdle()` drains the queue until empty (jumping
+  `currentTime` to the last task); `runCurrent()` runs only what's due at the *current*
+  instant without advancing.
+- **`runTest` auto-advances and asserts no leaks.** `runTest` runs the body on a
+  `StandardTestDispatcher`, then internally calls `advanceUntilIdle()` to flush all pending
+  virtual-time work. Crucially, it then checks the scheduler is empty: if a child coroutine
+  is still queued or never completes (a leaked `launch`, or one awaiting something that
+  never arrives), `runTest` fails with **`UncompletedCoroutinesError`** after a real-time
+  `dispatchTimeoutMs` (default 60s) watchdog — surfacing the leak instead of hanging CI
+  forever.
+
+!!! note "Why sharing the scheduler matters"
+    `runTest { }` and any dispatcher you inject must use the **same** `TestCoroutineScheduler`
+    or their virtual clocks diverge. That's why the pattern is
+    `StandardTestDispatcher(testScheduler)` — `testScheduler` is the `TestScope`'s scheduler,
+    and passing it wires the class-under-test's background coroutines onto the very clock
+    `advanceTimeBy`/`advanceUntilIdle` control. Construct a bare `StandardTestDispatcher()`
+    inside a `runTest` and it gets its *own* scheduler, so `advanceUntilIdle()` won't move it.
 
 !!! warning "The one rule that prevents 90% of coroutine-test pain"
     **Inject the dispatcher; never hardcode `Dispatchers.IO`/`Default`.** Pass `testScheduler` to the class under test so its background work shares the same virtual clock as `runTest`. And always install `Dispatchers.setMain(...)` via `MainDispatcherRule` for anything using `viewModelScope` (which is bound to `Dispatchers.Main`). Forget the rule and you get `Module with the Main dispatcher had failed to initialize`.
@@ -475,6 +560,56 @@ class ProfileFlowTest {
 
 **Robolectric** runs Android framework code on the **JVM** by shadowing the SDK — no emulator, so tests start in milliseconds and run in ordinary `test/` CI. Great for DAO tests, `Context`-needing units, and shallow UI. The trade-off: shadows are *approximations* of real Android, so a green Robolectric test is not a substitute for the handful of real-device instrumentation tests. Enable with `testOptions { unitTests.isIncludeAndroidResources = true }`.
 
+#### How shadows actually work
+
+The `android.jar` on the unit-test classpath is the **stub** SDK: every framework method
+body is literally `throw new RuntimeException("Stub!")`. That's why calling, say,
+`TextUtils.isEmpty(...)` in a plain JVM unit test throws `RuntimeException: Stub!` — there
+is no real implementation on the classpath. Robolectric's whole job is to put behaviour
+behind those stubs without an emulator, and it does so with a custom class loader plus
+shadow classes.
+
+- **A sandbox `ClassLoader` instruments bytecode at load time.** `AndroidJUnit4`/
+  `RobolectricTestRunner` doesn't load your test with the system class loader — it builds a
+  per-configuration **sandbox** with its own `AndroidSandbox`/`SandboxClassLoader`. As each
+  `android.*` class is loaded, the loader **rewrites its bytecode**: it makes methods
+  non-`final`, and injects a call to Robolectric's `ClassHandler` at the top of every
+  method body. So the redefinition happens at class-load, before any test code runs — you
+  never see the `"Stub!"` body because that method has been re-plumbed.
+- **`@Implements` / `@Implementation` shadow classes hold the fake behaviour.** A shadow is
+  an ordinary class annotated `@Implements(TextView::class)`; methods annotated
+  `@Implementation` mirror the framework signatures. At runtime the instrumented framework
+  method's injected `ClassHandler` hook looks up the registered shadow for that class and
+  invokes the matching `@Implementation`; if none exists the call becomes a no-op (or
+  returns a default) rather than throwing `"Stub!"`. Each framework object is paired with a
+  shadow instance holding the emulated state (a `ShadowTextView` remembers the text you set);
+  you reach it with `Shadows.shadowOf(view)` or `Shadow.extract(view)`.
+- **Per-test sandbox isolation.** Robolectric caches sandboxes keyed by SDK level /
+  configuration, and resets the shadow state between tests, so one test's mutated framework
+  state (a set system property, a scheduled `Looper` message) doesn't bleed into the next.
+  Different `@Config(sdk = [...])` values get different sandboxes with a different
+  instrumented `android.jar`.
+
+```kotlin
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class ToastTest {
+    @Test fun `shows toast text`() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        Toast.makeText(ctx, "Saved", Toast.LENGTH_SHORT).show()
+        // Read emulated state off the shadow, not the real (absent) framework:
+        assertThat(ShadowToast.getTextOfLatestToast()).isEqualTo("Saved")
+    }
+}
+```
+
+!!! warning "A custom shadow must be registered, and shadows drift from real Android"
+    Register project-specific shadows via `@Config(shadows = [MyShadow::class])` (or a
+    `robolectric.properties`), or the real (stubbed) method runs. And because shadows
+    re-implement framework behaviour by hand, they lag real OS versions and can subtly
+    diverge — treat Robolectric as fast *approximate* Android, and keep a thin layer of
+    on-device instrumentation tests for the things that must match a real device.
+
 **UI Automator** is the only tool that crosses app boundaries — driving the notification shade, system settings, the launcher, or a *second* app. Use it for true black-box E2E ("tap the notification, confirm it opens our deep link") where Espresso/Compose (single-app, needs your code) can't reach. It finds elements by `By.text(...)`, `By.res(...)`, `By.desc(...)` on a `UiDevice`.
 
 **JaCoCo** produces coverage reports (line/branch), typically merging unit + instrumentation execution data.
@@ -517,3 +652,50 @@ A flaky test is worse than no test: it trains the team to hit "re-run" and ignor
 !!! question "6. A CI suite has one test that fails ~5% of the time. What do you do?"
     Treat it as a P1 bug, not noise. First, **quarantine** it (tag it out of the blocking suite) and file a ticket so it stops eroding trust in red builds. Then root-cause: the usual suspects are `Thread.sleep`/timing, shared mutable state between tests (a real singleton, an unreset DB, a static), test-order dependence, or real clock/network/randomness. Fix by injecting the flaky source — `Clock`, seeded `Random`, test dispatchers, in-memory DB — cleaning state in `@After`, and replacing sleeps with `IdlingResource`/`waitUntil`. Disable animations on-device.
     **Follow-up — "Isn't automatic retry a fine fix?"** No — retries *hide* flakiness and can mask a genuine intermittent regression. If you retry at all, log every retry loudly and track flake rate as a metric so the underlying non-determinism still gets fixed.
+
+!!! question "7. How does Robolectric run framework code on the JVM without an emulator?"
+    The `android.jar` on the unit-test classpath is a *stub* — every method body is
+    `throw new RuntimeException("Stub!")`. Robolectric loads your test in a **sandbox
+    `ClassLoader`** that rewrites each `android.*` class's bytecode as it loads: methods are
+    de-`final`ed and a `ClassHandler` hook is injected at the top of every method. That hook
+    dispatches to a **shadow** — a class annotated `@Implements(Foo::class)` whose
+    `@Implementation` methods supply fake behaviour and hold emulated state (e.g.
+    `ShadowToast` remembers the last toast text). So the `"Stub!"` body is never reached; the
+    shadow answers instead, and you inspect state via `Shadows.shadowOf(obj)`. Sandboxes are
+    cached and reset per test (and per `@Config(sdk=...)`) for isolation.
+    **Follow-up — "Why isn't a green Robolectric test as good as on-device?"** Shadows are
+    hand-written approximations that lag and can diverge from real OS behaviour, and a custom
+    shadow only runs if registered via `@Config(shadows = [...])`. Robolectric gives fast,
+    approximate Android; keep a thin layer of real-device instrumentation tests for
+    fidelity.
+
+!!! question "8. Inside `runTest`, how does `delay` complete instantly, and how does it catch a leaked coroutine?"
+    All test dispatchers share one **`TestCoroutineScheduler`** that keeps a queue of tasks
+    keyed by a virtual `currentTime` (a `Long` of ms), not wall-clock. `delay(n)` doesn't
+    park a thread — it calls `scheduleResumeAfterDelay`, registering the continuation at
+    `currentTime + n`. `advanceTimeBy(n)`/`advanceUntilIdle()` pop due tasks and jump
+    `currentTime` forward, so `delay(10_000)` resumes in microseconds of real time.
+    `runTest` runs the body on a `StandardTestDispatcher`, then `advanceUntilIdle()`s all
+    pending virtual-time work; if a child coroutine is still queued or never completes, it
+    fails with **`UncompletedCoroutinesError`** after a real-time watchdog
+    (`dispatchTimeoutMs`, default 60s) — surfacing the leak instead of hanging.
+    **Follow-up — "Why pass `testScheduler` when constructing a dispatcher?"** So the class
+    under test shares the *same* scheduler as `runTest`. A bare `StandardTestDispatcher()`
+    gets its own scheduler, so `advanceUntilIdle()` won't move its coroutines and the test
+    silently does nothing.
+
+!!! question "9. How can MockK mock a `final` Kotlin class, and how does it instantiate one without running its constructor?"
+    Two libraries. **Byte Buddy** generates a subclass proxy of the target whose methods
+    route into MockK's stub/record engine; since subclassing a `final` class is illegal,
+    MockK installs Byte Buddy's **inline mock maker**, which uses a JVM instrumentation agent
+    to *redefine the loaded class's bytecode* and strip `final` first — the same capability
+    Mockito only gets via `mock-maker-inline`/`mockito-inline`, shipped on by default in
+    MockK. Then **Objenesis** creates an instance **without calling any constructor** (via
+    JVM-internal allocation like `Unsafe.allocateInstance`), so constructor side effects
+    never run and fields sit at defaults; all behaviour comes from your `every`/`coEvery`
+    stubs.
+    **Follow-up — "Why are `mockkStatic`/`mockkObject` separate calls?"** A static/top-level
+    function or a Kotlin `object` has no instance to subclass, so MockK must redefine the
+    declaring class's bytecode in place with the inline maker — a heavier, global operation
+    that must be undone (`unmockk*`/`clearMocks`) so the retransformed class doesn't leak
+    into later tests.

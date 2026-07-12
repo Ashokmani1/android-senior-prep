@@ -188,6 +188,56 @@ class BaselineProfileGenerator {
     `CompilationMode.Partial(BaselineProfileMode.Require)` vs `CompilationMode.None` in a
     Macrobenchmark — never assume the win, quantify it.
 
+### ART compilation tiers — what "install time" actually does
+
+The phrase "ART AOT-compiles at install time" is a useful shorthand, but the real
+pipeline is more subtle, and a staff interviewer will push on it: **since Android 7,
+there is no full ahead-of-time compile at install.** Doing so was the Dalvik-to-ART
+transition's original sin — it made installs and OS updates take minutes and bloated
+storage with native code for methods the user might never run. Today the app ships as
+**DEX bytecode** and reaches native code through a graduated set of tiers:
+
+| Tier | What runs | When | Cost |
+|------|-----------|------|------|
+| **Interpreter** | ART walks DEX bytecode directly (with a fast assembly interpreter) | Cold code, first runs | Slowest per-instruction |
+| **JIT** | Hot methods compiled to native on the fly by the JIT thread | Once a method's invocation/loop counters cross a threshold | Warm-up cost, but per-run |
+| **Profile recording** | The JIT writes the set of hot methods/classes to `/data/misc/profiles/cur/…/primary.prof` | Continuously, as JIT observes hotness | Negligible |
+| **`speed-profile` AOT** | `dex2oat` compiles **only the profiled hot methods** into the `.odex`/`.art` files | Background, when the device is **charging + idle** (`BackgroundDexOptService`, a `JobScheduler` job) | Paid once, off the critical path |
+
+So the honest model is: **interpret → JIT the hot methods → record them into a profile
+→ `dex2oat --compiler-filter=speed-profile` turns that profile into persisted AOT code
+during idle maintenance.** This is *profile-guided* AOT: only what the profile lists gets
+compiled, which is why storage and compile time stay bounded. `speed-profile` is the
+default filter; the older `speed` filter (compile everything) is reserved for special
+cases because it reintroduces the bloat.
+
+```mermaid
+flowchart LR
+    DEX["App ships as DEX<br/>(no full AOT at install)"] --> INT[Interpreter]
+    INT -->|counters cross threshold| JIT["JIT compiles hot method"]
+    JIT --> PROF["Hot methods logged to<br/>primary.prof"]
+    PROF -->|charging + idle| D2O["dex2oat speed-profile<br/>(profile-guided AOT)"]
+    D2O --> ODEX["Persisted native code<br/>.odex / .art"]
+    ODEX --> INT
+    BP["baseline.prof in APK/AAB"] -->|merged at install| PROF
+    D2O -->|"AOT'd methods skip interpret/JIT next launch"| FAST["Faster subsequent launches"]
+```
+
+**Where Baseline Profiles fit.** The `baseline.prof` bundled in the APK/AAB (the compiled
+form of the `baseline-prof.txt` discussed above) is **merged into the app's profile at
+install time**, and ART runs a `dex2oat` pass over exactly those methods. That is the
+whole point: it *short-circuits the cold-first-runs problem* — instead of waiting for the
+JIT to discover your startup and first-scroll methods over several launches and then
+waiting for an idle-charging window to persist them, the critical paths are AOT-compiled
+before the user's first tap. Cloud Profiles then feed field-aggregated hotness back into
+the same merge, refining coverage over time.
+
+!!! note "Why this explains the 'startup got slower after an update' bug"
+    An app update (or an OS update, or a profile wipe) **invalidates the persisted AOT
+    code**, dropping the app back to interpret/JIT until the next charging-idle `dex2oat`
+    run repopulates it. A shipped Baseline Profile blunts this because the critical paths
+    are re-AOT'd at install, not left to the background scheduler's timing.
+
 ---
 
 ## Layout performance
@@ -257,6 +307,48 @@ androidx.tracing.trace("Feed.diffAndBind") {
     bind(result)
 }
 ```
+
+### How a trace span actually reaches Perfetto
+
+Understanding the capture path explains why tracing is cheap enough to leave in
+production code and why Perfetto superseded `systrace`. A `Trace.beginSection("x")` /
+`Trace.endSection()` pair (which `androidx.tracing.trace { }` wraps, adding automatic
+`endSection` on exit) does **not** write to a Java logger. It calls down through
+`android.os.Trace` into native `libcutils`, which — *only if the matching **atrace tag**
+is enabled* — writes a formatted event line into the kernel's **ftrace ring buffer** via
+`/sys/kernel/tracing/trace_marker`. That is the entire hot-path cost: a tag check plus,
+when enabled, a small write to a per-CPU kernel buffer.
+
+```mermaid
+flowchart LR
+    APP["Trace.beginSection / endSection<br/>(androidx.tracing.trace)"] --> ATRACE["android.os.Trace → libcutils<br/>atrace tag check"]
+    ATRACE -->|tag enabled| MARK["write to /sys/kernel/tracing/trace_marker"]
+    MARK --> FTRACE["kernel ftrace ring buffer<br/>(per-CPU, plus sched/binder/gpu events)"]
+    FTRACE --> TRACED["traced / traced_probes daemons<br/>drain the buffer"]
+    TRACED --> PB["perfetto .perfetto-trace protobuf"]
+    PB --> UI["Perfetto UI / Studio profiler timeline"]
+```
+
+The key insight is the **shared buffer**: your app's spans land in the *same* ftrace
+buffer as kernel scheduling, binder transactions, and GPU/RenderThread events, so
+Perfetto can line up "my `Feed.diffAndBind` span" against "the CPU this thread was
+descheduled here" on one timeline — the whole reason it can tell you *why* a frame missed
+VSYNC.
+
+!!! note "Perfetto vs the deprecated `systrace`"
+    Old `systrace` shelled out to `atrace`, captured a bounded chunk of ftrace, and
+    dumped a self-contained HTML file — no continuous recording, small fixed buffer.
+    **Perfetto** replaces that with always-available system daemons (`traced` +
+    `traced_probes`) that stream ftrace into a ring buffer and serialize a compact
+    **protobuf** trace, enabling long / continuous / in-production captures and
+    SQL-queryable analysis. `systrace` is deprecated; the capture mechanism (atrace tags →
+    ftrace) is identical underneath — only the collector changed.
+
+`JankStats` and `FrameMetrics` sit at a higher level over the *same* frame data: rather
+than reading raw ftrace, they consume the framework's per-frame timing report and derive
+each stage's duration (input handling, animation, measure/layout, draw, GPU, buffer
+swap). Perfetto tells you *what the CPU was doing* in a slow frame; `FrameMetrics` tells
+you *which pipeline stage* of that frame overran its budget — you use them together.
 
 ---
 
@@ -523,4 +615,39 @@ downloads a foreign locale's strings or an unused CPU architecture's native libs
     4.  **Background Process Contention:** Over time, as a user installs more applications, the device's resident background processes increase. This places overall memory pressure on the Low Memory Killer (LMK) and triggers frequent Garbage Collection (GC) pauses during launch, slowing CPU scheduling.
     
     **Follow-up:** *How do you mitigate database and preference bloat on startup?* — Never access databases or parse large files on the main thread during launch. Keep `SharedPreferences` small, use `DataStore` for asynchronous reads, index Room query keys, and periodically run the SQLite `VACUUM` command to defragment the disk.
+
+!!! question "8. Does ART fully AOT-compile an app at install time? Walk through what actually happens."
+    No — full install-time AOT ended with Android 7. The app ships as **DEX**, and on first
+    runs ART runs it in the **interpreter**; the **JIT** compiles methods to native once
+    their invocation/loop counters cross a threshold, and simultaneously **records the hot
+    methods into a profile** (`primary.prof`). Later, when the device is **charging and
+    idle**, a background `dex2oat` pass with `--compiler-filter=speed-profile` performs
+    **profile-guided AOT** — persisting native code for *only* the profiled hot methods, not
+    the whole app. That bounds install time and storage. A **Baseline Profile** (`baseline.prof`
+    shipped in the APK/AAB) is **merged into the profile at install** and AOT-compiled
+    immediately, short-circuiting the several-cold-launches-then-wait-for-idle cycle for
+    startup and critical paths; **Cloud Profiles** feed field-aggregated hotness into the
+    same merge over time.
+    **Follow-up:** *Why is `speed-profile` the default rather than `speed`?* `speed` compiles
+    every method, reintroducing the slow-install / storage-bloat problem that killed
+    Dalvik-era full AOT; `speed-profile` compiles only what the profile proves is hot, so you
+    get AOT speed on the paths that matter without paying for the paths that don't.
+
+!!! question "9. When you call `Trace.beginSection`, how does that span reach the Perfetto UI?"
+    It is not a log line. `android.os.Trace` (wrapped by `androidx.tracing.trace { }`) calls
+    into native `libcutils`, checks whether the relevant **atrace tag** is enabled, and if so
+    writes an event to the kernel's **ftrace ring buffer** via `trace_marker`. That is the
+    whole runtime cost — a tag check plus a small per-CPU buffer write, cheap enough to leave
+    in production. Perfetto's `traced`/`traced_probes` daemons drain that buffer — which also
+    contains kernel scheduling, binder, and GPU events — and serialize a **protobuf** trace
+    the UI renders as one aligned timeline, so your span sits next to the CPU-scheduling and
+    RenderThread events that explain a missed VSYNC. The deprecated `systrace` used the same
+    atrace→ftrace capture but only dumped a bounded HTML snapshot; Perfetto swaps in
+    always-on daemons and a compact, SQL-queryable protobuf for continuous/in-production
+    capture.
+    **Follow-up:** *Where do `JankStats`/`FrameMetrics` fit?* They sit above the same
+    per-frame data but derive each **stage's** duration (input, animation, measure/layout,
+    draw, GPU, swap) from the framework's frame-timing report. Perfetto tells you *what the
+    CPU was doing* during a slow frame; `FrameMetrics` tells you *which stage* overran — use
+    them together.
 

@@ -291,6 +291,55 @@ Rule of thumb: use `goAsync()` for a quick off-main-thread hop (read a value, en
 
 ---
 
+## AMS dispatch internals — how a broadcast actually travels
+
+Everything above is app-facing. Underneath, a broadcast is a scheduling problem solved inside `ActivityManagerService` (AMS), and the mechanics explain the two facts you're expected to *derive*, not memorize: why the ~10s ANR exists at all, and why `goAsync()` keeps a process alive.
+
+### `BroadcastQueue`, records, and the ANR timer
+
+AMS owns `BroadcastQueue` instances — historically split into a **foreground** queue (short timeout, for broadcasts sent with `FLAG_RECEIVER_FOREGROUND`) and a **background** queue (longer timeout, the default). Each `sendBroadcast` becomes a **`BroadcastRecord`** capturing the intent, the resolved receiver list, the sender, and result state, which is enqueued onto the appropriate queue.
+
+Within a queue, delivery uses two different disciplines:
+
+- **`mParallelBroadcasts`** — non-ordered broadcasts. Matching receivers are handed their `BroadcastRecord` **concurrently**; the queue doesn't wait for one to finish before dispatching the next.
+- **`mOrderedBroadcasts`** — ordered broadcasts (and, importantly, *all* dynamically-registered receivers of a given record are drained serially). The queue dispatches to receiver N, and only advances to N+1 when N reports back via `finishReceiver`.
+
+The serial path is where the ANR lives. When AMS dispatches an ordered broadcast to a receiver, it posts a **timeout message** (`BROADCAST_TIMEOUT_MSG`) with a per-queue deadline — the ~10s foreground budget. If the receiver's `onReceive` (plus any `goAsync` window) hasn't called back before the timer fires, AMS's timeout handler declares the receiver unresponsive → **ANR**. So the "10-second rule" is not a property of `onReceive` itself; it is *this timeout handler on the ordered queue* that drives it.
+
+```mermaid
+flowchart TD
+    S["sendBroadcast(intent)"] --> AMS["AMS: build BroadcastRecord"]
+    AMS --> Q{"queue + discipline"}
+    Q -- non-ordered --> P["mParallelBroadcasts:<br/>dispatch to all receivers concurrently"]
+    Q -- ordered / dynamic drain --> O["mOrderedBroadcasts:<br/>dispatch to receiver N"]
+    O --> T["post BROADCAST_TIMEOUT_MSG (~10s)"]
+    T --> D{"finishReceiver before timer?"}
+    D -- yes --> O2["cancel timer → dispatch N+1"]
+    D -- no --> ANR["timeout handler → ANR"]
+```
+
+### Why `goAsync()` keeps the process alive (the actual mechanism)
+
+While a `BroadcastRecord` is in-flight to your process, AMS treats your process as **actively serving a broadcast** and raises its **`oom_adj`** (the out-of-memory adjustment score the `lowmemorykiller` uses to rank kill victims) into a more-protected band — roughly the "receiver" tier, well above a cached/empty process. That elevated `oom_adj` is *the* reason the process survives long enough to run `onReceive`.
+
+`goAsync()` hooks directly into this: it returns a `PendingResult`, and until you call `PendingResult.finish()`, AMS considers the broadcast still in-flight, so the `oom_adj` stays elevated and the process keeps its protection. Calling `finish()` tells AMS the receiver is done → the record is retired, `oom_adj` drops back toward the cached band, and (for ordered broadcasts) the timer is cancelled and the next receiver is dispatched. This is why "launch a coroutine and return" fails but `goAsync()` works: returning retires the record and drops your priority, whereas `goAsync()` holds it. Forgetting `finish()` is the mirror bug — the process is pinned at elevated priority and the ordered queue eventually ANRs on your timeout.
+
+### Cold manifest-receiver delivery path
+
+For a **dynamic** receiver the process is already alive, so AMS just posts the record to the existing `ApplicationThread`. A **manifest (static)** receiver is the interesting path — AMS may need to *create* the process:
+
+1. AMS resolves the manifest receiver and finds no running process for that package.
+2. AMS asks Zygote to **fork** a new process (`Process.start` → `ActivityThread.main`).
+3. Once the process's `ApplicationThread` binder is attached, AMS calls `scheduleReceiver(...)` on it (the `IApplicationThread` AIDL).
+4. `ActivityThread` handles that on its binder thread by posting `H.RECEIVER` onto the main-thread `Handler` (`ActivityThread.mH`).
+5. The main thread instantiates your `BroadcastReceiver` class, builds a `ReceiverData`, and invokes `onReceive` — then reports back to AMS via `finishReceiver`.
+
+The re-post onto `mH` is why `onReceive` is guaranteed to run on the **main thread** even though the IPC arrives on a pooled binder thread — the same `ActivityThread.mH` mechanism that drives Activity and Service lifecycle callbacks.
+
+### Android 14+ broadcast freezing / deferral
+
+On modern Android (the deferral machinery was tightened through API 34), a **cached** app — one with no visible components, that App Standby / cached-process management has **frozen** (via the freezer cgroup, so its threads aren't scheduled at all) — cannot meaningfully receive a broadcast. Rather than thaw the process for every event, AMS **defers** delivery of non-urgent broadcasts to frozen/cached processes and **coalesces** them: many broadcasts of the same action collapse, and the queue holds them until the process is un-frozen (or drops them if superseded). Broadcasts flagged urgent, and protected system broadcasts the app must see, bypass this. The practical upshot for app authors: a manifest receiver in a cached app may receive a broadcast **late, coalesced, or not at all** — another reason durable work belongs in `WorkManager`, whose constraints survive freezing, rather than in a receiver you assume fires promptly.
+
 ## Modern alternatives — reach for a broadcast last
 
 !!! success "Decision guide"
@@ -340,3 +389,11 @@ Normal broadcasts (`sendBroadcast`) go to all matching receivers asynchronously,
 **Q5. `LocalBroadcastManager` is deprecated — what replaces it and why is the replacement better?**
 Use a lifecycle-scoped observable — `SharedFlow`/`StateFlow` (or `LiveData`) exposed from a repository/`ViewModel`, collected with `repeatOnLifecycle`. It's better because it gives **type-safe payloads** (no `Bundle` stringly-typing), **automatic lifecycle scoping** (no manual unregister, no leaks), **backpressure/replay** control, and easy testability — versus `LocalBroadcastManager`, which encouraged a global untyped event bus.
 *Follow-up: `SharedFlow` vs `StateFlow` for events?* — `StateFlow` always has a current value and conflates rapid updates (good for *state*); `SharedFlow` (with buffer, no initial value) is right for **one-shot events** like "download finished" so they aren't re-delivered as current state on re-collection.
+
+**Q6. Where does the ~10s ANR budget actually come from, and how does `goAsync()` keep the process alive at the OS level?**
+Neither is a property of `onReceive` itself. Inside AMS, each `sendBroadcast` becomes a `BroadcastRecord` on a `BroadcastQueue`; ordered broadcasts (and the serial drain of dynamic receivers) go through `mOrderedBroadcasts`, and when AMS dispatches to a receiver it posts a `BROADCAST_TIMEOUT_MSG` with the queue's deadline (~10s foreground). If the receiver doesn't call back (`finishReceiver`) before that timer fires, the **timeout handler declares an ANR**. Separately, while a record is in-flight to your process AMS raises the process's **`oom_adj`** into a protected band so the `lowmemorykiller` won't reap it mid-delivery. `goAsync()` returns a `PendingResult` that keeps the record in-flight — so the `oom_adj` stays elevated — until you call `finish()`, which retires the record, drops priority back toward the cached band, and cancels the timeout. That's why "launch a coroutine and return" is unsafe (returning retires the record and lowers priority) while `goAsync()` is not.
+*Follow-up: What happens if you never call `PendingResult.finish()`?* — The record stays in-flight, so the process is pinned at elevated `oom_adj` and, for an ordered broadcast, the queue's timeout eventually fires an ANR on you. `finish()` is mandatory.
+
+**Q7. Trace how a manifest receiver in a not-running app ends up executing `onReceive` on the main thread.**
+AMS resolves the manifest receiver, finds no live process, and asks **Zygote to fork** one (`Process.start` → `ActivityThread.main`). When the new process's `ApplicationThread` binder attaches, AMS calls `scheduleReceiver(...)` on that `IApplicationThread`. The call lands on a pooled **binder thread**, which posts an `H.RECEIVER` message onto the main-thread handler **`ActivityThread.mH`**; the main thread then instantiates the `BroadcastReceiver`, invokes `onReceive`, and reports back via `finishReceiver`. The re-post onto `mH` is exactly why `onReceive` always runs on the main thread despite arriving over IPC — the same handler that drives Activity/Service lifecycle callbacks.
+*Follow-up: On Android 14+, why might that manifest receiver fire late or not at all?* — If the app is **cached and frozen** (freezer cgroup), AMS **defers and coalesces** non-urgent broadcasts to it instead of thawing it per event; queued broadcasts may collapse or be dropped if superseded. Only urgent/protected system broadcasts bypass this — so durable work belongs in `WorkManager`, not a receiver you assume fires promptly.

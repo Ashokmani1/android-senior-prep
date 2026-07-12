@@ -170,7 +170,7 @@ explains the guarantees.
 | **Async API** | Reads are `Flow`; writes are `suspend`. All disk I/O runs on `Dispatchers.IO` — the main thread is never touched. |
 | **In-memory cache** | After the first read, the current value is held in memory; subsequent reads are served from cache, so `data` emits instantly to new collectors. |
 | **Read-modify-write** | `edit`/`updateData` operate on the cached value, apply your lambda, then persist. |
-| **Atomic transactions** | Writes are serialised through a single actor (mutex-guarded). A write commits by writing to a **temp file then renaming** — the rename is atomic, so a crash mid-write leaves the old file intact. Concurrent writes queue; each sees the previous one's result (no lost updates). |
+| **Atomic transactions** | Writes are serialised through a single-consumer `SimpleActor` message queue (see below). A write commits by writing to a **temp file, fsync-ing, then renaming** — the rename is atomic, so a crash mid-write leaves the old file intact. Concurrent writes queue; each sees the previous one's result (no lost updates). |
 | **Corruption handling** | If the serializer throws a `CorruptionException` on read, an optional `corruptionHandler` is invoked to produce a replacement value instead of crashing. |
 
 ### Write → Flow-emit flow
@@ -188,6 +188,108 @@ flowchart TD
     E -. write fails .-> X["IOException propagated<br/>old file untouched"]
     C -. read fails .-> Y["CorruptionException →<br/>corruptionHandler produces value"]
 ```
+
+### The engine: `SingleProcessDataStore`
+
+The default factory (`preferencesDataStore { }`, `dataStore { }`, `DataStoreFactory.create`)
+builds a `SingleProcessDataStore<T>`. Its guarantees are not magic — they fall out of two
+concrete mechanisms: a single-consumer actor for ordering, and a `MutableStateFlow` for
+fan-out.
+
+**Writes are serialised through a `SimpleActor`.** Every `edit`/`updateData` call does not
+touch the file directly; it enqueues a message onto an internal `SimpleActor<Message<T>>`.
+The actor is a hand-rolled, allocation-light mailbox: an atomic `messageQueue`
+(a lock-free `Channel`) plus an atomic `remainingMessages` counter, drained by **one**
+coroutine at a time. Two message types flow through it:
+
+- `Message.Read` — "make sure the current value is loaded" (used to service `data`).
+- `Message.Update` — carries your transform lambda plus an `ack` `CompletableDeferred<T>`
+  that the caller `await()`s for the committed result.
+
+Because exactly one coroutine consumes the mailbox, updates run **strictly in submission
+order, one at a time**. That single-consumer discipline *is* the "single-writer"
+guarantee — there is no lock you can forget to take; ordering is structural. A concurrent
+increment therefore always observes the previous write's result, so updates can't be lost.
+
+!!! note "`SimpleActor` vs a `Mutex`"
+    Earlier descriptions (and older code) framed the write path as "a `Mutex`-guarded
+    section." The modern engine uses a `SimpleActor` message queue instead — same
+    mutual-exclusion outcome, but a queue also gives natural back-pressure and FIFO
+    fairness without a coroutine ever *holding* a lock across the suspending disk I/O.
+
+**Reads are a `MutableStateFlow<State<T>>`.** The in-memory cache is literally a
+`MutableStateFlow` whose value is a sealed `State<T>`:
+
+| `State<T>` | Meaning |
+|---|---|
+| `UnInitialized` | Nothing read from disk yet; first collector triggers the initial read. |
+| `Data<T>(value, hashCode)` | A valid cached value. New collectors of `data` get this immediately. |
+| `ReadException<T>(readException)` | The last read threw; the exception is replayed to collectors (this is the `IOException` you `.catch {}`). |
+| `Final<T>(finalException)` | The store is closed/scope-cancelled; terminal. |
+
+`data` is built on top of this flow, so a new collector after the first successful read
+gets the cached `Data` **synchronously** — no disk hit — which is why `data` "emits
+instantly to new collectors."
+
+**Durability is temp-file + fsync + atomic rename.** When the actor commits an update it
+does not overwrite the live file. It writes the serialized bytes to a scratch file
+(`<name>.tmp`), then — critically — calls `fileStream.fd.sync()` (a real **fsync**) to
+force the bytes and metadata out of the OS page cache onto stable storage, and only then
+performs an atomic `File.rename(tmp, real)`. If the process is killed between steps, the
+original file is still intact; you never observe a half-written file.
+
+```kotlin
+// Conceptual, matching androidx.datastore.core.okio/FileStorage semantics:
+tmpFile.outputStream().use { stream ->
+    serializer.writeTo(newValue, stream)
+    stream.fd.sync()          // fsync: durability barrier, not just a flush()
+}
+if (!tmpFile.renameTo(realFile)) {   // atomic on the same filesystem
+    tmpFile.delete()
+    throw IOException("Unable to rename $tmpFile to $realFile")
+}
+```
+
+!!! warning "`flush()` is not `fsync`"
+    A plain `OutputStream.flush()` only pushes bytes into the OS cache; a power loss can
+    still lose them. DataStore calls `fd.sync()` so the rename is only reached after the
+    new bytes are durably on disk — that ordering is what makes crash-mid-write safe.
+
+If `serializer.readFrom` throws a `CorruptionException` during the initial read, the
+configured `corruptionHandler` runs *inside* the actor to produce a replacement value,
+which is then written back through the same temp→fsync→rename path.
+
+### Multi-process access: `MultiProcessDataStoreFactory`
+
+DataStore is **single-process by default**: `SingleProcessDataStore` keeps its cache and
+its `SimpleActor` in one process's memory, so two processes each holding a
+`SingleProcessDataStore` over the same file will clobber each other and diverge.
+
+Since **androidx.datastore 1.1**, cross-process access is supported via
+`MultiProcessDataStoreFactory.create(...)`, which builds a `MultiProcessDataStore<T>`. It
+coordinates through an `InterProcessCoordinator` (`createMultiProcessCoordinator`) that
+replaces the single-process in-memory ordering with OS-level primitives:
+
+- A **`FileLock`** (an exclusive lock on a `.lock` file via `FileChannel.lock()`) serialises
+  writers *across processes* — the cross-process analog of the in-process actor.
+- A **shared version file**, bumped on every write and `mmap`-watched by the other
+  processes, so a process notices another process's commit and invalidates/reloads its
+  cache. This is what lets each process's `data` flow re-emit after a foreign write.
+
+```kotlin
+val dataStore: DataStore<UserSettings> = MultiProcessDataStoreFactory.create(
+    serializer = SettingsSerializer,
+    produceFile = { File(context.filesDir, "datastore/settings.pb") },
+)
+// Now safe to open from your :sync service process and the main process.
+```
+
+!!! warning "Only Proto-style multi-process, and only via the multi-process factory"
+    `MultiProcessDataStoreFactory` takes a `Serializer<T>` (the Proto/typed path). There is
+    no drop-in `preferencesDataStore(multiProcess = true)` delegate — you build the
+    multi-process store explicitly. And every process must open the file through
+    `MultiProcessDataStoreFactory`; mixing a single-process store into one process
+    reintroduces the divergence you were trying to avoid.
 
 ### Handling corruption
 
@@ -217,7 +319,7 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
 | **Transactions** | No atomicity across multiple keys; no read-modify-write guarantee (concurrent edits can lose updates). | `edit {}` / `updateData {}` are atomic, isolated transactions. |
 | **Type safety** | Stringly-typed keys; `ClassCastException` at runtime if types mismatch. | Typed keys (Preferences) or full schema types (Proto). |
 | **Async / reactivity** | Callback-based `OnSharedPreferenceChangeListener`; easy to leak. | First-class `Flow` — reactive, lifecycle-aware via `collect`. |
-| **Consistency** | Eventual; in-memory and disk can diverge on multi-process. | Strong, single-process consistency guarantees. |
+| **Consistency** | Eventual; in-memory and disk can diverge on multi-process, with no coordination. | Strong consistency: single-process by default (`SingleProcessDataStore`); safe cross-process access via `MultiProcessDataStoreFactory` (since 1.1). |
 
 !!! quote "The core problem, in one line"
     "SharedPreferences has a runtime API that gives no way to signal errors and no
@@ -307,15 +409,22 @@ every operation and holds the whole thing in memory — it is not a database.
     `CorruptionException` on parse failure.
 
 !!! question "3. How does DataStore guarantee atomic writes and no lost updates?"
-    All writes funnel through a single-writer actor guarded by a mutex, so they're
-    serialised. Each `edit`/`updateData` reads the current (cached) value, applies your
-    lambda (read-modify-write), writes to a **temp file, then atomically renames** it over
-    the real file. Because writes are serialised, a concurrent increment always sees the
-    previous write's result — no lost updates. A crash mid-write leaves the old file intact
-    because the rename hadn't happened.
+    All writes funnel through a single-consumer `SimpleActor` message queue: `edit`/
+    `updateData` enqueue a `Message.Update` (transform lambda + an `ack`
+    `CompletableDeferred`) and exactly one coroutine drains the mailbox, so updates run
+    strictly in submission order. That single-consumer discipline *is* the single-writer
+    guarantee — no lock to forget. Each update reads the current (cached) value, applies
+    your lambda (read-modify-write), writes to a **temp file**, calls `fileStream.fd.sync()`
+    (fsync), then does an atomic `rename()` over the real file. Because writes are
+    serialised, a concurrent increment always sees the previous write's result — no lost
+    updates. A crash mid-write leaves the old file intact because the rename hadn't happened.
 
-    **Follow-up:** *Is it multi-process safe?* No. DataStore's consistency guarantees are
-    single-process. For cross-process shared state you need a different mechanism.
+    **Follow-up:** *Is it multi-process safe?* By default no — the standard factory builds a
+    `SingleProcessDataStore` whose actor and cache live in one process. But **since
+    androidx.datastore 1.1** you can build a `MultiProcessDataStore` via
+    `MultiProcessDataStoreFactory.create(...)`; it swaps the in-memory actor for an
+    `InterProcessCoordinator` backed by a `FileLock` (cross-process write serialisation)
+    plus a shared version file (so each process reloads its cache after a foreign commit).
 
 !!! question "4. What happens if the DataStore file is corrupted, and how do you handle it?"
     On read, the serializer throws a `CorruptionException`. Without a handler this
@@ -338,3 +447,36 @@ every operation and holds the whole thing in memory — it is not a database.
 
     **Follow-up:** *Can they coexist?* Yes — a common pattern is DataStore for user
     preferences and Room for domain data, each exposing `Flow`s that a repository combines.
+
+!!! question "6. Can DataStore be shared across processes? Walk me through the mechanics."
+    Yes, since **androidx.datastore 1.1**. The default `SingleProcessDataStore` cannot —
+    its `SimpleActor` and `MutableStateFlow` cache are per-process, so two processes over
+    the same file diverge and lose writes. For cross-process use, build a
+    `MultiProcessDataStore` via `MultiProcessDataStoreFactory.create(serializer, produceFile,
+    ...)`. Internally it replaces the in-process ordering with an `InterProcessCoordinator`:
+    an exclusive **`FileLock`** on a `.lock` file serialises writers across processes (the
+    cross-process analog of the single-consumer actor), and a **shared version file** is
+    bumped on every write so other processes detect a foreign commit and invalidate/reload
+    their cache — that's what makes each process's `data` flow re-emit. The durability path
+    (temp → fsync → atomic rename) is unchanged.
+
+    **Follow-up:** *Is there a Preferences multi-process delegate?* No — there's no
+    `preferencesDataStore(multiProcess = true)`. `MultiProcessDataStoreFactory` takes a
+    typed `Serializer<T>` (the Proto-style path), and every participating process must open
+    the file through that factory; mixing in a single-process store anywhere reintroduces
+    divergence.
+
+!!! question "7. What are the states of DataStore's in-memory cache, and why do new collectors of `data` get a value instantly?"
+    The cache is a `MutableStateFlow<State<T>>` with a sealed `State`: `UnInitialized`
+    (nothing read yet — the first collector triggers the disk read), `Data<T>` (a valid
+    cached value), `ReadException<T>` (the last read threw — this is the `IOException`
+    replayed to collectors that you `.catch {}`), and `Final<T>` (store closed / scope
+    cancelled — terminal). Because `data` is layered over this `StateFlow`, once the first
+    read succeeds the value sits in the flow as `Data`, so a later collector receives it
+    synchronously with no disk hit — that's the "emits instantly to new collectors" behavior.
+
+    **Follow-up:** *How does a read error surface versus corruption?* A transient read
+    `IOException` is captured as `ReadException` and replayed through `data`, so you handle
+    it with `.catch {}` and emit defaults without touching the file. A `CorruptionException`
+    (unparseable bytes) instead invokes the `corruptionHandler` inside the actor, which
+    produces a replacement value that gets rewritten through the temp→fsync→rename path.

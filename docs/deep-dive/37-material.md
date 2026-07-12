@@ -303,6 +303,57 @@ This is a **CoordinatorLayout** story — the scroll choreography here builds di
 !!! tip "`titleCollapseMode`, `contentScrim`, and status bar"
     `contentScrim` is the color that fades in as the header collapses (usually `?attr/colorPrimary`); `statusBarScrim` covers the status bar area. Set `app:titleCollapseMode="scale"` for the animated title shrink or `"fade"` for a cross-fade. For edge-to-edge, let `CollapsingToolbarLayout` consume the top inset via `fitsSystemWindows` on the `CoordinatorLayout`.
 
+### How the deltas actually flow — the nested-scroll protocol
+
+"CoordinatorLayout routes scroll events" is the headline; the mechanism is the
+**`NestedScrollingParent2` / `NestedScrollingChild2`** contract (the `…2` variants add a
+`type` parameter distinguishing a touch drag, `TYPE_TOUCH`, from a fling settle,
+`TYPE_NON_TOUCH`). The scrolling child — a `RecyclerView` or `NestedScrollView`, which
+implement `NestedScrollingChild2` — does not scroll itself unilaterally; on every scroll
+frame it *offers* its delta to the parent first. `CoordinatorLayout` implements
+`NestedScrollingParent2` and forwards each callback to the `Behavior` of every child that
+wants it (here, `AppBarLayout.Behavior`, a `HeaderBehavior`). The round-trip for a single
+drag gesture:
+
+| Callback | Who | What happens |
+|---|---|---|
+| `onStartNestedScroll(child, target, axes, type)` | child → parent → each `Behavior` | `AppBarLayout.Behavior` returns `true` for vertical axes, claiming the stream |
+| `onNestedScrollAccepted(...)` | parent | book-keeping; the app bar prepares to move |
+| `onNestedPreScroll(target, dx, dy, consumed, type)` | **before** the child scrolls | The app bar consumes what it needs **first** — it collapses using part of `dy` and writes the amount taken into `consumed[1]`; the child then scrolls only by `dy - consumed[1]` |
+| `onNestedScroll(target, dxConsumed, dyConsumed, dxUnconsumed, dyUnconsumed, type)` | **after** the child scrolls | Leftover delta (child already at top/bottom) flows back up so the bar can keep moving |
+| `onStopNestedScroll(target, type)` | gesture / fling ends | `snap` settling and scrim finalization run here |
+
+The `consumed` **`int[]` array** is the crux: `onNestedPreScroll` is a *negotiation*. The
+parent writes `consumed[0]`/`consumed[1]` to tell the child "I already used this many
+pixels of your gesture," and the child subtracts that before moving its own content. This
+is exactly why a collapsing header eats the scroll first and the list content only starts
+moving once the header is fully collapsed — pre-scroll consumption, not two independent
+scrolls.
+
+```mermaid
+sequenceDiagram
+    participant L as RecyclerView<br/>(NestedScrollingChild2)
+    participant C as CoordinatorLayout<br/>(NestedScrollingParent2)
+    participant B as AppBarLayout.Behavior
+    L->>C: onStartNestedScroll(axes=VERTICAL, type)
+    C->>B: onStartNestedScroll → returns true
+    L->>C: onNestedPreScroll(dy, consumed[])
+    C->>B: consume for collapse; write consumed[1]
+    Note over L: list scrolls only by dy - consumed[1]
+    L->>C: onNestedScroll(dyConsumed, dyUnconsumed, type)
+    C->>B: apply leftover to app bar
+    L->>C: onStopNestedScroll(type)
+    C->>B: run snap / scrim finalize
+```
+
+!!! note "`type` is why fling and drag collapse differently"
+    The `type` parameter (`TYPE_TOUCH` vs `TYPE_NON_TOUCH`) lets `AppBarLayout.Behavior`
+    treat a finger drag and the fling that follows as one continuous scroll while still
+    distinguishing them — e.g. deciding whether a fling should be allowed to fully
+    collapse/expand the header. This is the concrete difference between the `…2` contract
+    and the original `NestedScrollingParent`/`Child`, which had no way to tell the two
+    apart.
+
 **Compose parallel:** `TopAppBar`/`LargeTopAppBar`/`MediumTopAppBar` with a `TopAppBarScrollBehavior` (`enterAlwaysScrollBehavior`, `exitUntilCollapsedScrollBehavior`) wired through `Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)` on the `Scaffold`.
 
 ---
@@ -408,6 +459,63 @@ flowchart TD
 ```
 
 The practical consequences: (1) a value like `?attr/colorPrimary` is resolved **at inflation time against the view's context theme**, so a `ThemeOverlay` applied via `android:theme` on a subtree can recolor just that branch; (2) because resolution walks the parent chain, defining only your source colors is enough — the rest inherit from `Theme.Material3.*`.
+
+#### One level deeper — `obtainStyledAttributes` and the `TypedArray`
+
+The flowchart above is the *conceptual* model; the real work happens in one call every
+custom view and every MDC component makes during construction:
+`context.obtainStyledAttributes(attrs, R.styleable.MaterialButton, defStyleAttr, defStyleRes)`,
+which is really `Resources.Theme.obtainStyledAttributes(...)`. It returns a **`TypedArray`**
+— a pooled, index-addressable buffer of already-resolved values for exactly the
+attributes the component asked about. The component then reads typed values out of it
+(`ta.getColor(...)`, `ta.getDimension(...)`, `ta.getResourceId(...)`) and **must call
+`ta.recycle()`** to return the buffer to the pool.
+
+The four arguments define the **attribute resolution stack**, and the theme resolver
+consults them in strict precedence to fill each slot of the `TypedArray`:
+
+| Precedence | Source | Example |
+|---|---|---|
+| 1 (highest) | Attribute set directly in the **XML tag** | `app:cornerRadius="8dp"` on the tag |
+| 2 | The **`style`** applied to that tag (`style="@style/…"`) | `Widget.Material3.Button.OutlinedButton` |
+| 3 | The **default style attribute** (`defStyleAttr`) — a *theme attribute* the component passes, e.g. `materialButtonStyle` | theme's `?attr/materialButtonStyle` → its default style |
+| 4 | The **default style resource** (`defStyleRes`) — a hard fallback style constant | `Widget.Material3.Button` |
+| 5 (lowest) | The **theme** itself | `Theme.MyApp` → parent chain |
+
+For each attribute the resolver walks 1→5 and takes the first hit. Crucially, when a
+resolved value is itself a **theme reference** (`?attr/colorPrimary`, encoded as
+`TypedValue.TYPE_ATTRIBUTE`), the resolver **re-resolves it against the theme** — folding
+in any `ThemeOverlay` on that view's context — until it lands on a concrete
+`TypedValue` (a color int, a dimension, a resource id). This second hop is why a
+component's *default style attr* (which points into the theme) plus the *theme overlay
+chain* together produce the final value: the style names the slot (`?attr/colorPrimary`),
+the overlay/theme decides what that slot currently means for this subtree.
+
+```kotlin
+// What a component effectively does in its constructor:
+val ta = context.obtainStyledAttributes(
+    attrs,
+    R.styleable.MaterialButton,   // which attrs I care about
+    R.attr.materialButtonStyle,   // defStyleAttr → a THEME attribute (level 3)
+    R.style.Widget_Material3_Button // defStyleRes → hard fallback (level 4)
+)
+try {
+    // getColor sees a ?attr/colorPrimary reference and re-resolves it
+    // through THIS context's theme + any ThemeOverlay before returning an int.
+    val bg = ta.getColor(R.styleable.MaterialButton_backgroundTint, 0)
+} finally {
+    ta.recycle()   // return the TypedArray to the pool — leaking it is a real bug
+}
+```
+
+!!! note "Why `?attr/` recolors a subtree but `@color/` does not"
+    A `@color/…` reference is resolved once to a fixed value. A `?attr/…` reference is a
+    *late-bound* lookup against **the theme of the resolving `Context`**. Because a
+    `ThemeOverlay` applied via `android:theme` produces a new `ContextThemeWrapper` for
+    that view and its children, the same `?attr/colorPrimary` in a component's default
+    style resolves to *different* concrete values in different branches of the tree — all
+    without the component knowing an overlay exists. That indirection is the entire
+    mechanism behind M3 theming.
 
 ### Dynamic color (Material You, Android 12+)
 
@@ -553,3 +661,11 @@ override fun onCreate(savedInstanceState: Bundle?) {
 !!! question "5. How does M3 dark theme work — DayNight, elevation overlays, and `forceDarkAllowed`?"
     `Theme.Material3.DayNight.*` auto-selects `values-night/` resources based on night mode (set with `AppCompatDelegate.setDefaultNightMode(...)`, persisted per-app), so you override only colors that differ. In dark themes, raised surfaces can't show shadows, so M3 applies an **elevation overlay** — tinting the surface lighter with `colorPrimary` proportional to elevation (why a dark card looks lighter than its background). `android:forceDarkAllowed="true"` asks the OS to **auto-invert** a light-only layout; it's a legacy stopgap that mishandles images/brand colors and fights overlays — real apps ship `-night` resources and set it `false`.
     **Follow-up:** *Dynamic color interaction?* `DynamicColors.applyToActivitiesIfAvailable()` (API 31+) overlays wallpaper-derived roles onto your theme in both light and dark; harmonize fixed brand colors with `MaterialColors.harmonize(...)` and keep a static fallback palette for API < 31.
+
+!!! question "6. Mechanically, how does `?attr/colorPrimary` on a component turn into a concrete color at inflation?"
+    Every component calls `Resources.Theme.obtainStyledAttributes(attrs, styleable, defStyleAttr, defStyleRes)`, which returns a **`TypedArray`** of already-resolved values for the attributes it asked about (and must be `recycle()`d). To fill each slot the theme resolver walks a fixed precedence stack: **XML tag attribute → applied `style` → the default style attr (`defStyleAttr`, itself a theme attribute like `?attr/materialButtonStyle`) → the default style resource (`defStyleRes`) → the theme**, taking the first hit. When a hit is itself a theme reference (`?attr/colorPrimary`, a `TypedValue` of type attribute), the resolver **re-resolves it against this view's `Context` theme** — folding in any `ThemeOverlay` — until it reaches a concrete value. So the style names the *slot* and the overlay/theme chain decides what that slot *means* for this subtree; the component reads a plain `int` out of the `TypedArray` and never knows an overlay was involved.
+    **Follow-up:** *Why does `?attr/` recolor a subtree but `@color/` doesn't?* `@color/` resolves once to a fixed value; `?attr/` is a late-bound lookup against the resolving `Context`'s theme, and a `ThemeOverlay` via `android:theme` wraps that branch in a new `ContextThemeWrapper`, so the same attribute resolves to different concrete values in different branches.
+
+!!! question "7. Beyond \"CoordinatorLayout routes events,\" what is the actual contract behind a collapsing toolbar?"
+    The **`NestedScrollingParent2`/`NestedScrollingChild2`** protocol. The scrolling child (`RecyclerView`/`NestedScrollView`) implements the child interface; `CoordinatorLayout` implements the parent interface and forwards callbacks to each child's `Behavior` (here `AppBarLayout.Behavior`). Per scroll frame: `onStartNestedScroll` lets the app bar claim the vertical stream; then **`onNestedPreScroll(dx, dy, consumed, type)`** runs *before* the list moves — the app bar collapses using part of `dy` and writes the pixels it took into the **`consumed` `int[]`** so the child scrolls only by `dy - consumed[1]`; any leftover after the child hits its edge comes back through `onNestedScroll`; `onStopNestedScroll` runs `snap`/scrim finalization. The pre-scroll consumption is precisely why the header collapses first and the list content moves only afterward — not two independent scrolls.
+    **Follow-up:** *What does the `2` add over `NestedScrollingParent`/`Child`?* A `type` parameter (`TYPE_TOUCH` vs `TYPE_NON_TOUCH`) that distinguishes a finger drag from the fling that follows, so the behavior can treat them as one continuous scroll yet still decide, e.g., whether a fling may fully collapse the header — impossible with the original single-phase contract.

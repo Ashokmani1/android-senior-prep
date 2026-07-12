@@ -456,6 +456,51 @@ fun PaymentScreen(navController: NavController) {
 
 Each entry's `SavedStateHandle` is persisted via its `SavedStateRegistry`, so it survives **configuration change and process death** (values must be `Bundle`-able). This is what makes result-passing (`previousBackStackEntry.savedStateHandle`) robust across a system kill — and why a Hilt ViewModel injected with `SavedStateHandle` transparently receives the destination's typed nav arguments as pre-populated keys.
 
+### The `Navigator` plugin architecture
+
+`NavController` itself knows nothing about Fragments, Composables, or Activities. It only knows how to manipulate a list of `NavBackStackEntry`. The actual *showing* of a destination is delegated to a **`Navigator`**, and this is the library's extensibility seam.
+
+Each destination type has a `Navigator<out NavDestination>` implementation registered under a `@Navigator.Name` string:
+
+| Navigator | `@Navigator.Name` | Owns |
+|---|---|---|
+| `FragmentNavigator` | `"fragment"` | `FragmentTransaction`s into the `NavHostFragment` container |
+| `ComposeNavigator` | `"composable"` | The set of composable entries the `NavHost` renders |
+| `DialogNavigator` | `"dialog"` | Dialog/`DialogFragment` destinations drawn over the current one |
+| `ActivityNavigator` | `"activity"` | `startActivity` for `<activity>` destinations |
+| `NavGraphNavigator` | `"navigation"` | Entering a nested graph at its `startDestination` |
+
+Registration happens in a **`NavigatorProvider`** (a name → `Navigator` map that `NavController` holds). A `NavHost` adds the navigators it needs at construction — e.g. `NavHostFragment` installs a `FragmentNavigator` and `DialogFragmentNavigator`; the Compose `NavHost` installs `ComposeNavigator` and `DialogNavigator`. When you call `navController.navigate(...)`, `NavController` looks up the target destination's `navigatorName`, fetches the matching `Navigator` from the provider, and delegates the actual push to `navigator.navigate(...)`; `popBackStack()` delegates symmetrically to `navigator.popBackStack(...)`. The `Navigator` reports back through a shared **`NavigatorState`** so `NavController` and the plugin agree on the entry list.
+
+```mermaid
+flowchart TD
+    NC["NavController.navigate(dest)"] --> LK["look up dest.navigatorName"]
+    LK --> NP["NavigatorProvider<br/>(name → Navigator map)"]
+    NP -->|'fragment'| FN["FragmentNavigator"]
+    NP -->|'composable'| CN["ComposeNavigator"]
+    NP -->|'activity'| AN["ActivityNavigator"]
+    NP -->|'dialog'| DN["DialogNavigator"]
+    FN --> ST["NavigatorState<br/>(shared back-stack truth)"]
+    CN --> ST
+    AN --> ST
+    DN --> ST
+    ST --> NC
+```
+
+This is exactly how you'd add a custom destination type: subclass `Navigator<D>`, annotate it `@Navigator.Name("mytype")`, register it in the provider, and `NavController` drives it with no changes to its own code.
+
+### How each entry's `Lifecycle` and `ViewModelStore` are driven
+
+An entry's `Lifecycle` is not moved by the entry itself — `NavController` **drives** every `NavBackStackEntry`'s `LifecycleRegistry` directly. On each back-stack change it computes, per entry, a **`maxLifecycle`** cap from that entry's stack position (top entry → `RESUMED`; covered by a `dialog` → `STARTED`; covered by a full destination → `CREATED`; popped → `DESTROYED`). It then calls `entry.setMaxLifecycle(...)`, and the entry's effective state is `min(hostLifecycleState, maxLifecycle)` — i.e. the host `NavHost`'s own lifecycle **clamped** by the computed cap. So if the hosting Activity is only `STARTED`, even the top entry never exceeds `STARTED`; when the Activity resumes, `NavController` re-drives every entry up to its cap. This clamping is why a covered destination correctly sits at `CREATED` while the visible one is `RESUMED`, all off a single host lifecycle.
+
+Per-entry `ViewModelStore`s are held centrally by a **`NavControllerViewModel`** — a `ViewModel` scoped to the `NavHost`'s own `ViewModelStore`. It keeps a `map<UUID, ViewModelStore>` keyed by each entry's unique **`id` (a UUID)**. `NavBackStackEntry.getViewModelStore()` returns its store from that map. When an entry is popped, `NavController` calls into the `NavControllerViewModel` to `clear()` and drop that UUID's store — which is the concrete step that fires `ViewModel.onCleared()` for destination- and graph-scoped ViewModels. Because the stores live in the `NavControllerViewModel` (not in the entries), they survive configuration change along with the `NavController`.
+
+### Back-stack state across process death
+
+Lifecycle owners can't be serialized, but their *state* can. `NavController.saveState()` walks the current back stack and produces a `Bundle` containing an array of **`NavBackStackEntryState`** — a lightweight, `Parcelable` snapshot of each entry (its destination id, arguments, the entry's UUID, and its saved `SavedStateRegistry` state). `NavHostFragment`/the Compose `NavHost` call `saveState()` from their own `onSaveInstanceState`, so the `NavBackStackEntryState[]` rides inside the host's saved instance state.
+
+On restoration, `NavController.restoreState(bundle)` reads the `NavBackStackEntryState[]` back and **re-instantiates** each `NavBackStackEntry` — reattaching the same UUID (so `SavedStateHandle`/ViewModel keys line up), re-resolving the destination from the graph, and rebuilding the stack in order. This, combined with each entry's `SavedStateRegistry`, is the full mechanism behind "the back stack survives system-initiated process death." (The separate multiple-back-stacks feature reuses the same machinery: `NavOptions.shouldRestoreState`/`saveState` stash and restore a whole sub-stack's `NavBackStackEntryState[]` per tab.)
+
 ---
 
 ## Navigation in Compose (brief)
@@ -532,3 +577,11 @@ Navigation exists to make **one Activity + many destinations** practical. Why se
     Single-Activity centralizes the back stack, transitions, and deep links in one `NavController`, avoids expensive Activity re-creation, and enables shared scoping — instead of passing state through `Intent` extras across Activities. `NavBackStackEntry` being a `LifecycleOwner` + `ViewModelStoreOwner` + `SavedStateRegistryOwner` means each destination is a **self-contained state scope**: lifecycle-correct observation, per-destination/per-graph ViewModels, and `SavedStateHandle` that survives process death — all keyed to stack position and cleaned up on pop.
 
     **Follow-up — how does the entry's lifecycle behave when a dialog destination sits on top?** A `DialogFragment`/`dialog` destination is drawn over the previous one without fully obscuring it, so the underlying entry stays `STARTED` (not `CREATED`), whereas a full fragment destination pushes the covered entry down to `CREATED`. This distinction matters for when observers below keep receiving updates.
+
+!!! question "6. How does `NavController` support Fragments, Composables, and Activities without knowing about any of them — and how would you add a custom destination type?"
+    Through the **`Navigator` plugin architecture**. `NavController` only manipulates a list of `NavBackStackEntry`; the actual showing of a destination is delegated to a `Navigator` implementation registered under a `@Navigator.Name` — `FragmentNavigator` (`"fragment"`), `ComposeNavigator` (`"composable"`), `ActivityNavigator` (`"activity"`), `DialogNavigator` (`"dialog"`), `NavGraphNavigator` (`"navigation"`). A `NavHost` installs the navigators it needs into a `NavigatorProvider` (a name→`Navigator` map). On `navigate()`, `NavController` reads the target's `navigatorName`, pulls the matching `Navigator` from the provider, and delegates the push (and pop) to it; the `Navigator` reports the resulting entry list back via a shared `NavigatorState`. To add a custom destination type you subclass `Navigator<D>`, annotate it `@Navigator.Name("mytype")`, and register it in the provider — `NavController` drives it unchanged. That's the extensibility seam.
+    **Follow-up — why does the Compose `NavHost` need a different `Navigator` than the Fragment one if the `NavController` API is identical?** Because the `Navigator` is the only layer that touches the platform: `FragmentNavigator` runs `FragmentTransaction`s against the `NavHostFragment` container, while `ComposeNavigator` just exposes which entries the `NavHost` composable should render. Same `NavController`, same back stack, different presentation plugin.
+
+!!! question "7. Mechanically, how does an entry's `Lifecycle` get driven, where do per-destination ViewModels live, and how does the back stack survive process death?"
+    `NavController` drives each `NavBackStackEntry`'s `LifecycleRegistry` itself: on every back-stack change it computes a per-entry `maxLifecycle` cap from stack position (top→`RESUMED`, under a dialog→`STARTED`, covered→`CREATED`, popped→`DESTROYED`) and the entry's effective state is `min(hostLifecycleState, maxLifecycle)` — the host `NavHost`'s lifecycle **clamped** by that cap. Per-entry `ViewModelStore`s are not in the entries; they're held by a `NavControllerViewModel` (scoped to the `NavHost`'s `ViewModelStore`) in a `map<UUID, ViewModelStore>` keyed by each entry's UUID, and popping an entry clears/drops its store (firing `onCleared()`). For process death, `NavController.saveState()` serializes the stack into a `Bundle` of `NavBackStackEntryState[]` (destination id, args, UUID, saved registry state) via the host's `onSaveInstanceState`; `restoreState()` re-instantiates each entry with the same UUID so `SavedStateHandle`/ViewModel keys realign.
+    **Follow-up — why is preserving the UUID on restore essential?** Because `SavedStateHandle` keys, the `SavedStateRegistry` blob, and the `NavControllerViewModel`'s `ViewModelStore` are all keyed by the entry's UUID. If restore minted fresh UUIDs, the restored entry couldn't reattach its saved state or its ViewModel store, so surviving-process-death result passing and graph-scoped state would silently break.

@@ -238,6 +238,65 @@ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
 }
 ```
 
+## Enforcement internals — what a "grant" actually is
+
+Everything above is the SDK/UX layer. Underneath, a permission grant is not a single boolean; it is enforced by **three independent mechanisms**, and knowing which one applies to a given permission is what separates "I call `checkSelfPermission`" from "I understand why revoking storage doesn't kill an already-open file descriptor."
+
+### AppOps — the mode machine behind dangerous & special permissions
+
+A dangerous or special permission's *runtime* state does not live in a bitfield next to the package; it is backed by an **app-op** tracked by `AppOpsManager` (system service `appops`, persisted in `/data/system/appops.xml`). Each op has a **mode**, not a boolean:
+
+| Mode | Constant | Meaning |
+|---|---|---|
+| Allowed | `MODE_ALLOWED` | Op proceeds. |
+| Ignored | `MODE_IGNORED` | Op is silently no-op'd — the call *succeeds* but returns empty/blank data (this is how a revoked op degrades without crashing). |
+| Errored | `MODE_ERRORED` | Op throws `SecurityException`. |
+| Default | `MODE_DEFAULT` | Fall back to the underlying permission check (the op defers to the `PackageManager` grant state). |
+
+This mode-not-boolean design is *why* several modern features exist at all — they are pure AppOps state layered on top of the permission:
+
+- **One-time grants** ("Only this time"): the op is flipped to `MODE_ALLOWED` and then reset back toward `MODE_IGNORED`/default when the app goes idle — the manifest permission never changes.
+- **Approximate location**: `ACCESS_FINE_LOCATION` stays granted, but the op `OP_FINE_LOCATION` is set so the fused provider fuzzes coordinates — the "precise" toggle is an op, not a permission edit.
+- **Unused-app auto-reset** (API 30+): the framework resets the ops for apps you haven't opened in months. That is why rule #6 in the UX list ("re-check on every use") is not paranoia — the grant genuinely reverts underneath you.
+
+The framework enforces this via three op calls: `noteOp()` (record + check a one-shot access, e.g. reading a contact), `checkOp()` (check without recording), and `startOp()`/`finishOp()` (bracket a long-running access like an active mic session, which is what powers the privacy indicators). `MODE_IGNORED` is the key insight: a revoked dangerous permission often makes the API return *empty* rather than throw, so defensive code must handle "granted but got nothing back."
+
+### Permission → Linux UID/GID mapping (kernel-enforced, not framework-checked)
+
+A second class of permissions is not checked by any framework method at call time at all — it is enforced by the **Linux kernel** via group membership. The mapping lives in `/etc/permissions/platform.xml`:
+
+```xml
+<permission name="android.permission.INTERNET">
+    <group gid="inet" />
+</permission>
+<permission name="android.permission.WRITE_EXTERNAL_STORAGE">
+    <group gid="sdcard_rw" />
+</permission>
+```
+
+When Zygote forks your app process, `PackageManagerService` computes the set of supplementary Linux GIDs your granted permissions map to and passes them to the fork; the process is born with, e.g., membership in the `inet` group. From then on, opening a TCP socket succeeds simply because the kernel sees the process is in `inet` — there is no `checkSelfPermission(INTERNET)` in the hot path. Media/storage access maps similarly to `sdcard_rw` / `media_rw`.
+
+!!! note "Why `INTERNET` feels different"
+    `INTERNET` is a *normal* permission with no runtime dialog — yet it's genuinely enforced, just at a different layer. Because the GID is baked in at fork time, it also explains why permission changes that alter GIDs historically required a process restart to take effect: you can't re-parent a running process's supplementary groups.
+
+### The check path — from `checkSelfPermission` down to AMS
+
+```mermaid
+flowchart TD
+    A["ctx.checkSelfPermission(P)"] --> B["PermissionManagerService /<br/>PackageManagerService: per-UID grant state"]
+    C["Remote caller over Binder"] --> D["Service calls<br/>ActivityManagerService.checkPermission(P, pid, uid)"]
+    D --> B
+    B --> E{granted for UID?}
+    E -- normal/dangerous/signature --> F["compare against per-UID<br/>runtime + install grant"]
+    E -- op-backed --> G["AppOpsManager mode check"]
+    E -- signature --> H["compare signing certs<br/>(same cert as declarer?)"]
+```
+
+`Context.checkSelfPermission` resolves the caller's own UID and asks `PermissionManagerService` (split out of `PackageManagerService` in recent releases) for the per-UID grant state — permissions are tracked **per UID**, not per process, which is why two apps sharing a `sharedUserId` share grants. For an **IPC caller**, the service being called cannot trust the caller's word, so it uses `Binder.getCallingUid()`/`getCallingPid()` and routes through `ActivityManagerService.checkPermission(permission, pid, uid)` (or `checkComponentPermission`) to verify the *remote* app holds the permission. **Signature** permissions resolve differently again: the grant succeeds only if the requesting app's signing certificate matches the certificate of the app that *declared* the permission — a certificate comparison done at install time by `PackageManagerService`, with no per-UID runtime state and no user prompt.
+
+!!! warning "Check on the right side of the Binder"
+    A common security bug is checking a permission in the *client* before making an IPC call. The client's process can be patched. Any exported service, `ContentProvider`, or AIDL endpoint must re-check on the **server** side using the calling UID (`enforceCallingPermission` / `checkCallingPermission`), because that's the only identity the kernel guarantees.
+
 ## Best-practice UX
 
 1. **Request in-context, at the moment of need** — never a wall of permission dialogs at first launch. Ask for camera when they tap the shutter.
@@ -274,3 +333,13 @@ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
     The legacy API delivers results to `onRequestPermissionsResult` via manual integer request codes, decoupled from the call site, and is fragile across configuration changes and process death. `registerForActivityResult` with `RequestPermission`/`RequestMultiplePermissions` gives a typed, lambda-based result at the call site, and the framework correctly re-delivers results after config change or process recreation. You **must register it during initialization** — as a field or before the component reaches `STARTED` — never lazily inside a click handler, or you'll get an `IllegalStateException`.
 
     *Follow-up: How do you request several permissions and react to a partial grant?* Use `RequestMultiplePermissions`, whose callback receives a `Map<String, Boolean>`. Inspect each entry and branch — e.g. fine-location granted → precise tracking, only coarse granted → approximate, none → graceful degradation. Never assume all-or-nothing.
+
+!!! question "6. Below the SDK, how is a dangerous permission grant actually enforced — is it just a boolean?"
+    No. The *runtime* state of a dangerous or special permission is backed by an **app-op** in `AppOpsManager`, which has a **mode**, not a boolean: `MODE_ALLOWED`, `MODE_IGNORED` (call succeeds but returns empty/blank data), `MODE_ERRORED` (throws `SecurityException`), or `MODE_DEFAULT` (defer to the underlying permission). The framework records access via `noteOp()`/`checkOp()`/`startOp()`. This op layer is exactly what powers one-time grants (op flipped to allowed, then reset when idle), approximate location (`ACCESS_FINE_LOCATION` stays granted but the fine-location op fuzzes coordinates), and unused-app auto-reset. Because a revoked op often yields empty data rather than an exception, defensive code must handle "granted but got nothing back," and must re-check on every use since the grant can silently revert.
+
+    *Follow-up: How is `INTERNET` enforced, given there's no dialog and no op?* Via the Linux kernel, not the framework. `platform.xml` maps `INTERNET` to the `inet` supplementary GID; `PackageManagerService` passes that GID when Zygote forks the process, so opening a socket succeeds purely because the kernel sees the process is in `inet`. Storage maps to `sdcard_rw`/`media_rw` the same way. There is no `checkSelfPermission` in that hot path.
+
+!!! question "7. An exported service checks the caller's permission on the client side before the IPC call. Why is that a bug, and where should the check go?"
+    The client process is untrusted — it can be modified, so a client-side check protects nothing. The permission must be verified on the **server** side of the Binder, using the identity the kernel guarantees: `Binder.getCallingUid()`/`getCallingPid()`, via `enforceCallingPermission`/`checkCallingPermission` (or, inside a system service, `ActivityManagerService.checkPermission(permission, pid, uid)`). Permissions are tracked **per UID**, not per process, which is also why apps sharing a `sharedUserId` share grants. Signature permissions are a special case: the grant is decided at install time by comparing signing certificates, so there's no per-UID runtime state to check for them.
+
+    *Follow-up: Why per-UID rather than per-package or per-process?* The Linux sandbox is built around UIDs — each app normally gets its own UID, and file/socket ownership and IPC identity are all UID-based. Tying grants to the UID makes them consistent with kernel enforcement and correctly shared across a `sharedUserId` group.
