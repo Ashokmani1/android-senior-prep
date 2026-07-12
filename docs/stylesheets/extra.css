@@ -1,121 +1,314 @@
-/* Custom premium theme overrides */
+/* ==========================================
+   Android Senior Prep - Modern Theme Overrides
+   ========================================== */
 
 :root {
   /* Core modern fonts */
-  --md-text-font: 'Inter', sans-serif;
-  --md-code-font: 'JetBrains Mono', monospace;
+  --md-text-font: 'Inter', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+  --md-code-font: 'JetBrains Mono', 'Fira Code', monospace;
 
-  /* Custom HSL and hex colors */
-  --brand-primary: #5c6bc0;
-  --brand-primary-light: #8e99f3;
-  --brand-primary-dark: #26418f;
-  --brand-accent: #00e5ff;
-  
   /* Smooth animations */
-  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-smooth: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --border-radius-lg: 16px;
+  --border-radius-md: 12px;
+  --border-radius-sm: 8px;
 }
 
-/* Light mode overrides */
+/* Light Mode Styling */
 [data-md-color-scheme="default"] {
-  --md-primary-fg-color: #3f51b5;
-  --md-primary-fg-color--transparent: rgba(63, 81, 181, 0.1);
+  --md-primary-fg-color: #2e3b82;
+  --md-primary-fg-color--transparent: rgba(46, 59, 130, 0.08);
   --md-primary-bg-color: #ffffff;
-  --md-accent-fg-color: #00bcd4;
+  --md-accent-fg-color: #10b981;
+  --md-accent-bg-color: rgba(16, 185, 129, 0.1);
+  
+  /* Text and BG colors */
+  --md-default-fg-color: #1e293b;
+  --md-default-bg-color: #fafbfc;
+  --md-code-bg-color: #f1f5f9;
   --md-admonition-bg-color: #f8fafc;
+  --border-color-soft: rgba(0, 0, 0, 0.06);
+  --bg-gradient: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  --table-header-bg: #e2e8f0;
 }
 
-/* Dark mode overrides */
+/* Dark Mode (Slate) Styling */
 [data-md-color-scheme="slate"] {
-  --md-primary-fg-color: #1e1b4b;
-  --md-primary-fg-color--transparent: rgba(99, 102, 241, 0.1);
-  --md-primary-bg-color: #0f172a;
-  --md-accent-fg-color: #22d3ee;
-  --md-admonition-bg-color: #1e293b;
+  --md-primary-fg-color: #0f172a;
+  --md-primary-fg-color--transparent: rgba(99, 102, 241, 0.12);
+  --md-primary-bg-color: #0b0f19;
+  --md-accent-fg-color: #34d399;
+  --md-accent-bg-color: rgba(52, 211, 153, 0.15);
+
+  /* Text and BG colors */
+  --md-default-fg-color: #e2e8f0;
+  --md-default-bg-color: #0b0f19;
+  --md-code-bg-color: #1e293b;
+  --md-admonition-bg-color: #111827;
+  --border-color-soft: rgba(255, 255, 255, 0.06);
+  --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+  --table-header-bg: #1f2937;
 }
 
-/* Custom layout & components aesthetics */
+/* ─────────────────────────────────────────────────────────────
+   Main Content Layout & Typography
+   ───────────────────────────────────────────────────────────── */
+
+body {
+  background-color: var(--md-default-bg-color);
+  letter-spacing: -0.011em;
+  line-height: 1.625;
+}
+
+/* Headings Upgrade */
+.md-typeset h1 {
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-size: 2.25rem;
+  margin-bottom: 1.5rem;
+  color: var(--md-primary-fg-color);
+  position: relative;
+}
+
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 1.5rem;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+.md-typeset h3 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  font-size: 1.2rem;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Header & Search Bar
+   ───────────────────────────────────────────────────────────── */
+
 .md-header {
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  background-color: var(--md-primary-fg-color);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  background-color: rgba(46, 59, 130, 0.85) !important;
+  border-bottom: 1px solid var(--border-color-soft);
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background-color: rgba(15, 23, 42, 0.8) !important;
+}
+
+/* Search bar styling */
+.md-search__form {
+  border-radius: 20px !important;
+  background-color: rgba(255, 255, 255, 0.08) !important;
   transition: var(--transition-smooth);
 }
 
-/* Beautiful Rounded Corners for Card layouts & code blocks */
+.md-search__input {
+  border-radius: 20px !important;
+}
+
+.md-search__form:hover {
+  background-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+.md-search__input:focus ~ .md-search__form {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Sidebar Navigation (Lists, Active States, Hover)
+   ───────────────────────────────────────────────────────────── */
+
+.md-sidebar {
+  transition: var(--transition-smooth);
+}
+
+/* Nav links styling */
+.md-nav__link {
+  border-radius: var(--border-radius-sm);
+  padding: 0.35rem 0.6rem !important;
+  margin: 0.1rem 0;
+  transition: var(--transition-smooth);
+}
+
+/* Link hover animation */
+.md-nav__link:hover {
+  background-color: var(--md-primary-fg-color--transparent);
+  color: var(--md-accent-fg-color) !important;
+  padding-left: 0.8rem !important; /* Slide-in padding on hover */
+}
+
+/* Active side nav link */
+.md-nav__link--active {
+  background-color: var(--md-primary-fg-color--transparent) !important;
+  color: var(--md-primary-fg-color) !important;
+  font-weight: 700 !important;
+  border-left: 3px solid var(--md-accent-fg-color);
+  border-radius: 0 var(--border-radius-sm) var(--border-radius-sm) 0;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link--active {
+  color: var(--md-accent-fg-color) !important;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Code Fences & Inline Code
+   ───────────────────────────────────────────────────────────── */
+
+/* Rounded code blocks */
 .md-typeset pre, 
 .md-typeset code,
 .highlight {
-  border-radius: 12px !important;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: var(--border-radius-md) !important;
+  border: 1px solid var(--border-color-soft);
 }
+
+/* Inline code markup */
+.md-typeset code {
+  background-color: var(--md-code-bg-color);
+  color: var(--md-accent-fg-color);
+  padding: 0.15rem 0.35rem !important;
+  border-radius: 6px !important;
+  font-size: 0.85em;
+  font-weight: 500;
+  border: none;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Tables
+   ───────────────────────────────────────────────────────────── */
+
+.md-typeset table:not([class]) {
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border-color-soft);
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--table-header-bg);
+  font-weight: 700;
+  border-bottom: 2px solid var(--border-color-soft);
+  padding: 0.75rem 1rem;
+}
+
+.md-typeset table:not([class]) td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color-soft);
+  transition: var(--transition-smooth);
+}
+
+/* Zebra striping + hover styling */
+.md-typeset table:not([class]) tr:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.015);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.015);
+}
+
+.md-typeset table:not([class]) tr:hover td {
+  background-color: var(--md-primary-fg-color--transparent);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Admonitions (Notes, Warnings, Tip Pastels)
+   ───────────────────────────────────────────────────────────── */
 
 .md-typeset .admonition,
 .md-typeset details {
-  border-radius: 16px !important;
+  border-radius: var(--border-radius-lg) !important;
   border-left-width: 6px !important;
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05) !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.03) !important;
+  border-top: 1px solid var(--border-color-soft);
+  border-right: 1px solid var(--border-color-soft);
+  border-bottom: 1px solid var(--border-color-soft);
   transition: var(--transition-smooth);
+  background-color: var(--md-admonition-bg-color) !important;
 }
 
 .md-typeset .admonition:hover {
   transform: translateY(-2px);
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1) !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08) !important;
 }
 
-/* Tabbed container modern aesthetics */
-.tabbed-set {
-  border-radius: 12px;
-  overflow: hidden;
+/* Custom Admonition Border Left colors and soft bg overlays */
+.md-typeset .admonition.note,
+.md-typeset .admonition.info {
+  border-left-color: #3b82f6 !important;
 }
 
-/* Dynamic Grid cards updates */
+.md-typeset .admonition.tip,
+.md-typeset .admonition.success {
+  border-left-color: #10b981 !important;
+}
+
+.md-typeset .admonition.warning {
+  border-left-color: #f59e0b !important;
+}
+
+.md-typeset .admonition.danger {
+  border-left-color: #ef4444 !important;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Grid Cards
+   ───────────────────────────────────────────────────────────── */
+
 .grid.cards > li, 
 .grid.cards > a {
-  border-radius: 16px !important;
-  border: 1px solid rgba(0,0,0,0.06) !important;
+  border-radius: var(--border-radius-lg) !important;
+  border: 1px solid var(--border-color-soft) !important;
   padding: 1.5rem !important;
   background: var(--md-admonition-bg-color) !important;
   transition: var(--transition-smooth) !important;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
-}
-
-[data-md-color-scheme="slate"] .grid.cards > li,
-[data-md-color-scheme="slate"] .grid.cards > a {
-  border: 1px solid rgba(255,255,255,0.05) !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.02) !important;
 }
 
 .grid.cards > li:hover,
 .grid.cards > a:hover {
-  transform: translateY(-4px) scale(1.02);
+  transform: translateY(-4px) scale(1.015);
   border-color: var(--md-accent-fg-color) !important;
-  box-shadow: 0 12px 30px rgba(0,0,0,0.08) !important;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.08) !important;
 }
 
-/* Navigation items highlight with rounded edges */
-.md-nav__link {
-  border-radius: 8px;
-  transition: var(--transition-smooth);
+/* ─────────────────────────────────────────────────────────────
+   Footer & Other Small Adjustments
+   ───────────────────────────────────────────────────────────── */
+
+.md-footer {
+  border-top: 1px solid var(--border-color-soft);
+  background-color: var(--md-admonition-bg-color);
+  padding: 1.5rem 0;
 }
 
-.md-nav__link--active {
-  background-color: var(--md-primary-fg-color--transparent);
-  font-weight: 700;
+.md-footer-meta {
+  background-color: transparent !important;
 }
 
-/* Floating back-to-top button styling */
+/* Float-to-top button styling */
 .md-top {
   border-radius: 50% !important;
-  background-color: var(--md-accent-fg-color) !important;
+  background-color: var(--md-primary-fg-color) !important;
   color: #ffffff !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   transition: var(--transition-smooth);
 }
 
 .md-top:hover {
+  background-color: var(--md-accent-fg-color) !important;
   transform: translateY(-4px);
 }
 
-/* Scrollbars updates */
+/* Scrollbar customizations */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -126,10 +319,10 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(156, 163, 175, 0.4);
+  background: rgba(156, 163, 175, 0.3);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(156, 163, 175, 0.6);
+  background: rgba(156, 163, 175, 0.55);
 }
