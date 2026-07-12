@@ -1,6 +1,7 @@
 site_name: Android Senior & Lead Interview Kit
 site_description: Architecture, modularization, system design, and leadership prep for Senior/Lead Android interviews.
 site_author: Ashok
+site_url: https://ashokmani1.github.io/android-senior-prep/
 copyright: Personal interview-prep knowledge base.
 
 theme:
