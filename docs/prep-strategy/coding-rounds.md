@@ -503,7 +503,20 @@ fun main() {
 
 ### Postfix decrement in a recursive call
 
-**The ask (as given, Java-flavored):**
+**The ask, verbatim shape:**
+
+```
+fun s(int n) {
+    if (n == 0) { print("text") return }
+    print(n)
+    s(n--)
+}
+s = 3
+```
+
+This is asked in both Java and Kotlin flavors across loops. Treat both — the underlying rule (and the trap) is identical in every C-family/JVM language; only the surface syntax differs.
+
+#### Java version
 
 ```java
 void s(int n) {
@@ -514,29 +527,74 @@ void s(int n) {
 s(3);
 ```
 
-!!! note "This doesn't compile as literal Kotlin"
-    Kotlin function parameters are implicitly `val` — `n--` on a parameter is a compile error (`val cannot be reassigned`). The trap only exists in a language (Java, or a Kotlin version with `n` copied into a local `var`) where the parameter is mutable. Worth naming out loud if an interviewer hands you this in Kotlin syntax — it's really testing postfix-decrement evaluation order, not Kotlin specifically.
+**Trace, one frame at a time:**
 
-**The trace:** `s(3)` prints `3`, not `0`. Every recursive call sees `n == 3` again, so the base case is never reached — this is **infinite recursion**, terminating only in a `StackOverflowError`. The reason: `n--` is a **postfix** decrement — the *value of the expression* is `n` **before** decrementing; only the *side effect* (writing the decremented value back to `n`) happens after. That side effect lands in the current call's local `n`, which is about to be discarded — the value actually passed to the next `s(...)` call is the pre-decrement value, `3`, every single time.
+| Call | `n` on entry | `n == 0`? | prints | argument expression `n--` | value passed to next call |
+|---|---|---|---|---|---|
+| `s(3)` | 3 | no | `3` | evaluates to **3** (current value), *then* this frame's local `n` is written to `2` — but that write is never read again | `3` |
+| `s(3)` | 3 | no | `3` | evaluates to **3** again, same reasoning | `3` |
+| `s(3)` | 3 | no | `3` | … | `3` |
+| … | 3 | no | `3` | … | `3` |
 
-```
-s(3): n=3 → print "3" → argument n-- evaluates to 3 (then this frame's n becomes 2, irrelevant)
-  s(3): n=3 → print "3" → same thing again
-    s(3): n=3 → print "3" → ...
-      ... forever → StackOverflowError
-```
+Output is `3` printed forever — **infinite recursion**, terminating only in a `StackOverflowError`. The base case (`n == 0`) is never reached because every single call receives the *same* value, `3`.
 
-**The fix:** use **prefix** decrement, `s(--n)` — its expression value *is* the already-decremented value, so each call actually receives a smaller `n`:
+**Why:** `n--` is a **postfix** decrement. Its *expression value* — the thing actually passed as the argument — is `n` **before** the decrement. The decrement itself is only a side effect, applied to *this frame's* `n` *after* the value has already been captured for the call. That mutated `n` then belongs to a stack frame that's about to be superseded by the next call's brand-new `n` (initialized fresh from the argument, which was `3`) — so the decrement's effect is thrown away every time. Nothing about recursion is special here; it's pure operator-evaluation-order.
+
+**The fix:** use **prefix** decrement, `s(--n)` — its expression value *is* the already-decremented value, so the callee receives something smaller each time:
 
 ```java
 void s(int n) {
     if (n == 0) { System.out.print("text"); return; }
     System.out.print(n);
-    s(--n);   // prints the DECREMENTED value → 3, 2, 1, "text"
+    s(--n);   // argument value IS the decremented n → 3, 2, 1, "text"
 }
 ```
 
-Complexity aside, this is a "do you actually understand postfix vs prefix evaluation order, not just the syntax" question — a very cheap trap that turns a 4-line function into an unbounded stack growth bug.
+#### Kotlin version
+
+The literal Kotlin translation of the given syntax **does not compile**: function parameters in Kotlin are implicitly `val`, and `n--` requires a `var`. Name that out loud if an interviewer hands you Kotlin-flavored pseudocode — but don't stop there, since the fix is one line and the trap is exactly the same once you make it compile: copy the parameter into a local `var` first (a common, legitimate pattern whenever a function needs to mutate what came in as an immutable parameter).
+
+```kotlin
+fun s(input: Int) {
+    var n = input          // val parameter copied into a mutable local
+    if (n == 0) { print("text"); return }
+    print(n)
+    s(n--)                 // Kotlin's postfix `dec()` — identical evaluation-order rules to Java
+}
+s(3)
+```
+
+Kotlin's `n--` desugars to `operator fun Int.dec()` under the hood, but the observable contract is unchanged from Java/C: **the expression's value is the operand before decrementing; the assignment back to `n` is a separate step that happens after the value has been read.** So the trace is byte-for-byte the same as the Java version above — `3` printed forever, `StackOverflowError`, and the fix is the same swap:
+
+```kotlin
+fun s(input: Int) {
+    var n = input
+    if (n == 0) { print("text"); return }
+    print(n)
+    s(--n)                 // prints the DECREMENTED value → 3, 2, 1, "text"
+}
+```
+
+#### The generalizable rule (this is what actually gets tested)
+
+Two separate facts combine to produce the trap, and an interviewer expects you to name both:
+
+1. **Postfix vs prefix is about the *expression's value*, not about whether the mutation happens.** Both `n--` and `--n` decrement `n`. They differ only in *what value the surrounding expression evaluates to* — `n--` yields the old value, `--n` yields the new one. This is true everywhere (`return n--`, `arr[n--]`, `s(n--)`) — memorize it as "post reads old, pre reads new," not as a per-context rule.
+2. **A function call always creates a brand-new binding for its parameter.** The mutation from step 1 lands on the *caller's* variable. In a **loop**, the caller's variable is reused every iteration, so the mutation is visible next time around — a loop version of this exact logic works fine:
+
+    ```kotlin
+    var n = 3
+    while (true) {
+        if (n == 0) { print("text"); break }
+        print(n)
+        n--                 // same variable, mutated in place — visible on the next iteration
+    }
+    // prints: 3 2 1 text   — terminates correctly
+    ```
+
+    But in **recursion**, the callee's parameter is a *new* variable initialized from whatever value the argument expression evaluated to. The postfix mutation applied to the *caller's* copy is invisible to the callee — there is no shared storage for it to persist in. That's the whole bug: swapping `s(n--)` for `s(--n)` doesn't change *whether* `n` gets decremented (it always does, immediately, in both cases) — it changes *which* value (old vs new) gets threaded into the next call, and only one of those values ever reaches zero.
+
+Complexity aside, this is a "do you actually understand evaluation order, not just the syntax" question — a 4-line function that silently turns into unbounded stack growth. It's cheap for an interviewer to ask and expensive to get wrong live, so trace it out loud, frame by frame, rather than pattern-matching "postfix = bug."
 
 ### Throttle concurrent uploads
 
