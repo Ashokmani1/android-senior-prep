@@ -148,6 +148,27 @@ If a composable is re-invoked but **all its parameters are equal to last time**,
 !!! note "Practical rule"
     Prefer immutable data (`kotlinx.collections.immutable`'s `ImmutableList`, `val`-only data classes) for state passed into composables. Unstable params are the #1 cause of "why is this recomposing every frame?" Full treatment — strong skipping mode, stability inference, `@Stable` contract — is in the runtime PDF.
 
+### `List` vs `MutableList` vs `ImmutableList` vs `PersistentList`
+
+A common trap: `List<T>` *looks* read-only, so it's tempting to assume it's stable. It isn't, by default.
+
+| Type | Stable? | Why |
+|---|---|---|
+| `MutableList<T>` | **No** | A mutable interface — the compiler can't trust `equals`, and mutating it in place doesn't touch a snapshot `State`, so it neither triggers recomposition on change nor allows skipping. |
+| `List<T>` | **No** (by default) | It's a *read-only view*, not a guarantee of immutability — the compiler can't prove the concrete backing object isn't a `MutableList` mutated through another alias. Same distrust as `MutableList`, just one layer removed. |
+| `ImmutableList<T>` (`kotlinx.collections.immutable`) | **Yes** | The Compose compiler has built-in recognition of this library's types as stable/immutable, so params of this type participate in skipping. |
+| `PersistentList<T>` | **Yes** | The concrete, structurally-shared implementation `ImmutableList` is backed by — also recognized stable, and its `add`/`remove` return a *new* list sharing most of the old tree (O(log n)-ish) instead of a full O(n) copy, so it's cheap to produce a fresh instance on every state update. |
+
+```kotlin
+// Unstable: defeats skipping even if the list "didn't change" — List can't be trusted.
+@Composable fun ItemList(items: List<Item>) { /* recomposes whenever its parent does */ }
+
+// Stable: compiler-recognized, enables skipping.
+@Composable fun ItemList(items: ImmutableList<Item>) { /* skips when the reference is unchanged */ }
+```
+
+Practical rule: expose `ImmutableList`/`PersistentList` from a ViewModel's UI state (or annotate a wrapper `@Immutable`) rather than a plain `List`, whenever that state feeds a composable you want to skip. See [Compose Runtime Internals — Recomposition & skipping](41-compose-internals.md#4-recomposition-skipping) for the stability contract these annotations rely on.
+
 ### C.4 `key()` and list identity
 
 Composition identity is positional by default. When you emit items in a loop, the Nth call site "is" the Nth item — if the list reorders or an item is inserted at the front, Compose matches by position and mis-associates state (`remember`ed values, animations) with the wrong item.

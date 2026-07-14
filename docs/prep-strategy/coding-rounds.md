@@ -49,6 +49,21 @@ This page does two things:
 | Meesho | `val` vs `const` | [Kotlin fundamentals](../kotlin/fundamentals.md#const-val-vs-val) |
 | Meesho | `inline` keyword | [Kotlin idioms](../kotlin/idioms.md#inline-noinline-crossinline) |
 | Meesho | `lateinit` vs `lazy` | [Kotlin fundamentals](../kotlin/fundamentals.md#lateinit-vs-lazy) |
+| Rakuten | Does changing device/app language re-download a language split | [App Bundle — language splits](../deep-dive/36-distribution.md#language-splits-and-a-runtime-locale-change) |
+| Rakuten | A→B→C→D — which activity can be `singleInstance`, and why | [Launch modes](../deep-dive/01-activity.md#the-four-launch-modes) |
+| Rakuten | Can a `data class` have an empty constructor | [Kotlin fundamentals](../kotlin/fundamentals.md#can-a-data-class-have-an-empty-constructor) |
+| Rakuten | `List` vs `MutableList` vs `ImmutableList` vs `PersistentList` stability in Compose | [Compose Basics — stability](../deep-dive/25-compose-basics.md#list-vs-mutablelist-vs-immutablelist-vs-persistentlist) |
+| Rakuten | Recomposition scope: which functions recompose when a hoisted value changes | [Worked below ↓](#tracing-recomposition-scope) |
+| Rakuten | Backing properties in Kotlin | [Kotlin fundamentals](../kotlin/fundamentals.md#backing-fields-backing-properties) |
+| Rakuten | `inline` lambda with a bare `return` swallows a later call — fix it, and what `noinline` changes | [Worked below ↓](#non-local-return-swallowing-a-later-call) |
+| Rakuten | Normal function vs `inline` function, why declare a function `inline` | [Kotlin idioms](../kotlin/idioms.md#inline-noinline-crossinline) |
+| Rakuten | `@Inject` vs `@AssistedInject` | [M14 Dagger](../deep-dive/14-dagger.md#inject-vs-assistedinject) |
+| Rakuten | Trace a recursive function using postfix `n--` as the argument | [Worked below ↓](#postfix-decrement-in-a-recursive-call) |
+| Rakuten | `LiveData` vs `MediatorLiveData`; cold vs hot `Flow` | [MediatorLiveData](../deep-dive/05-viewmodel-livedata.md#b7-mediatorlivedata) · [Cold vs hot Flow](../deep-dive/13-flow.md#cold-vs-hot) |
+| Rakuten | Exception handling in coroutines | [M12 Coroutines — Part F](../deep-dive/12-coroutines.md#part-f-exception-handling) |
+| Rakuten | Stateful vs stateless composables | [Compose Basics — state hoisting](../deep-dive/25-compose-basics.md#part-e-state-hoisting-unidirectional-data-flow) |
+| Rakuten | `launch` vs `async` — which to use for background work | [Worked below ↓](#launch-vs-async-for-background-work) |
+| Rakuten | Upload 30 images, but only 5 concurrently | [Worked below ↓](#throttle-concurrent-uploads) |
 
 !!! tip "Why most of this table is links, not answers"
     A Senior/Lead loop reuses the same fundamentals every other round asks — the differentiator
@@ -485,6 +500,142 @@ fun main() {
 ```
 
 *Interview angle:* This demonstrates **closures** in Kotlin. The returned lambda captures the parameter `factor` from its enclosing scope and retains it even after `multiplier` completes execution.
+
+### Postfix decrement in a recursive call
+
+**The ask (as given, Java-flavored):**
+
+```java
+void s(int n) {
+    if (n == 0) { System.out.print("text"); return; }
+    System.out.print(n);
+    s(n--);
+}
+s(3);
+```
+
+!!! note "This doesn't compile as literal Kotlin"
+    Kotlin function parameters are implicitly `val` — `n--` on a parameter is a compile error (`val cannot be reassigned`). The trap only exists in a language (Java, or a Kotlin version with `n` copied into a local `var`) where the parameter is mutable. Worth naming out loud if an interviewer hands you this in Kotlin syntax — it's really testing postfix-decrement evaluation order, not Kotlin specifically.
+
+**The trace:** `s(3)` prints `3`, not `0`. Every recursive call sees `n == 3` again, so the base case is never reached — this is **infinite recursion**, terminating only in a `StackOverflowError`. The reason: `n--` is a **postfix** decrement — the *value of the expression* is `n` **before** decrementing; only the *side effect* (writing the decremented value back to `n`) happens after. That side effect lands in the current call's local `n`, which is about to be discarded — the value actually passed to the next `s(...)` call is the pre-decrement value, `3`, every single time.
+
+```
+s(3): n=3 → print "3" → argument n-- evaluates to 3 (then this frame's n becomes 2, irrelevant)
+  s(3): n=3 → print "3" → same thing again
+    s(3): n=3 → print "3" → ...
+      ... forever → StackOverflowError
+```
+
+**The fix:** use **prefix** decrement, `s(--n)` — its expression value *is* the already-decremented value, so each call actually receives a smaller `n`:
+
+```java
+void s(int n) {
+    if (n == 0) { System.out.print("text"); return; }
+    System.out.print(n);
+    s(--n);   // prints the DECREMENTED value → 3, 2, 1, "text"
+}
+```
+
+Complexity aside, this is a "do you actually understand postfix vs prefix evaluation order, not just the syntax" question — a very cheap trap that turns a 4-line function into an unbounded stack growth bug.
+
+### Throttle concurrent uploads
+
+**The ask:** 30 images queued for upload; the server (or your own bandwidth budget) should only see **5 in flight at once**.
+
+```kotlin
+suspend fun uploadAll(images: List<Uri>, maxConcurrent: Int = 5): List<UploadResult> = coroutineScope {
+    val semaphore = Semaphore(maxConcurrent)
+    images.map { uri ->
+        async {
+            semaphore.withPermit { uploadOne(uri) }   // suspends here until a permit is free
+        }
+    }.awaitAll()   // fails fast: one upload throwing cancels the rest
+}
+```
+
+All 30 `async` coroutines are **launched** immediately — that's cheap, they're just suspended coroutine objects, not threads. Each one blocks at `semaphore.withPermit { }` until one of the 5 permits frees up, so at most 5 are actually inside `uploadOne` at any moment; the instant one finishes, the next queued coroutine acquires the freed permit and starts. `awaitAll()` gives fail-fast structured-concurrency behavior: if any upload throws, the rest are cancelled instead of silently finishing after you've already reported failure.
+
+!!! note "Why `Semaphore`, not `chunked(5)`"
+    A naive `images.chunked(5).forEach { chunk -> chunk.map { async { uploadOne(it) } }.awaitAll() }` also caps concurrency at 5, but it **stalls at each chunk boundary** — it waits for the slowest of each batch of 5 before starting the next 5, even if 4 of them finished early. `Semaphore` keeps the pipeline saturated: a new upload starts the instant *any* slot frees, not the instant the whole batch does. Same O(n) work, strictly better throughput under uneven upload times.
+
+    `Dispatchers.IO.limitedParallelism(5)` (see [M12 Coroutines — Dispatchers](../deep-dive/12-coroutines.md#custom-dispatchers-and-limitedparallelism)) is the *dispatcher-level* version of the same idea — reach for it when you're bounding thread/dispatcher usage; reach for `Semaphore` when you're bounding an **application-level** resource limit (e.g. "the server accepts 5 concurrent uploads per client") that's independent of which dispatcher runs the work.
+
+### Tracing recomposition scope
+
+**The ask:** `A()` calls `B()`; `B()` calls `C()` and `D()`. A `userName` value is read directly in `A` and threaded down as a parameter through `B` to `D` (`C` never sees it). When `userName` changes, which functions recompose?
+
+```kotlin
+@Composable
+fun A(userName: String) {
+    Text("Hello $userName")   // A reads userName directly → A is invalidated on change
+    B(userName)
+}
+
+@Composable
+fun B(userName: String) {
+    C()             // no dependency on userName
+    D(userName)
+}
+
+@Composable
+fun C() { /* ... */ }
+
+@Composable
+fun D(userName: String) { Text(userName) }
+```
+
+**Answer: `A`, `B`, and `D` recompose. `C` is skipped.**
+
+- `A` reads `userName` in its own body, so `A`'s recompose scope is directly invalidated when it changes — `A` always re-runs.
+- Because `A` re-runs, it re-invokes `B(userName)` with the new value. `B`'s parameter is a `String` (stable) but its *value* changed, so `B` is **not** equal to last time → skipping doesn't apply → `B` recomposes.
+- `B` re-invokes `C()` — `C` takes no parameters affected by the change, and (assuming it's otherwise stable/skippable) its call site sees no changed, unstable input → the runtime calls `skipToGroupEnd()` and **`C`'s body never re-runs**, cutting off recomposition to its entire subtree.
+- `B` also re-invokes `D(userName)` — the parameter changed, so `D` is not skipped and recomposes.
+
+The general rule this exercises: recomposition isn't "the whole subtree re-runs because a parent changed" — it propagates only through scopes whose actual inputs changed (or that directly read the invalidated state); any composable in between whose call-site arguments are unchanged and stable is skipped, and skipping a scope skips everything *inside* it too. See [Compose Basics — Recomposition](../deep-dive/25-compose-basics.md#part-c-recomposition) and [Compose Runtime Internals — Recomposition & skipping](../deep-dive/41-compose-internals.md#4-recomposition-skipping) for the mechanics behind why `C` is never even entered.
+
+### Non-local return swallowing a later call
+
+**The ask:**
+
+```kotlin
+inline fun message(a: () -> Unit) { a.invoke() }
+
+fun main() {
+    message { print(1); return }
+    message { print(2) }
+}
+```
+
+**Output:** `1` — and nothing else. `main()` returns immediately after printing `1`; the second `message { print(2) }` call is never reached.
+
+**Why:** `message` is `inline`, so its body — and the lambda passed to it — is spliced directly into the call site. The bare `return` inside the first lambda is therefore a **non-local return**: because the lambda physically lives inside `main()` after inlining, `return` exits `main()` itself, not just the lambda. That's exactly the mechanism [Kotlin idioms — `inline`/`noinline`/`crossinline`](../kotlin/idioms.md#inline-noinline-crossinline) covers: non-local return is only possible because the lambda is inlined.
+
+**To print `2` as well**, use a **labeled return** to make the first `return` local to the lambda instead of non-local to `main`:
+
+```kotlin
+fun main() {
+    message { print(1); return@message }   // local return — exits only this lambda
+    message { print(2) }                   // now reached: prints "2"
+}
+```
+
+`return@message` stops the first lambda at that point (same effect as falling off the end of the block) without unwinding `main`, so execution continues to the next statement.
+
+**What `noinline` changes:** marking the parameter `noinline` —
+
+```kotlin
+inline fun message(noinline a: () -> Unit) { a.invoke() }
+```
+
+— stops the lambda from being physically spliced into the call site; it becomes a real allocated `Function0` object, the same as a parameter to a non-inline function. Because it's no longer inlined, a **bare `return` inside it is no longer legal** — the compiler rejects it (`'return' is not allowed here`), forcing you to either use `return@message` or restructure. So `noinline` doesn't fix the output by itself; it removes the *capability* that caused the bug in the first place (non-local return), turning a silent logic error into a compile-time error that points you at the labeled-return fix.
+
+### `launch` vs `async` for background work
+
+For a plain "go do this in the background, I don't need the result" task — an analytics ping, a DB write, a fire-and-forget network call — prefer **`launch`**. It's the simpler builder (`Job`, no result to manage), and an uncaught exception surfaces immediately through structured concurrency to the parent/`CoroutineExceptionHandler`, which is the behavior you want for work nobody is waiting on: a failure should be visible, not silently discarded.
+
+Reach for **`async`** only when you need a *result* and intend to `await()` it — typically two or more independent pieces of work you want running concurrently before combining their results. The trap: `async` **defers** its exception to `await()` — if you never call `await()` on a `Deferred`, a thrown exception can sit unobserved (and, depending on the job hierarchy, may not surface until something else notices). Using `async` for work you don't plan to await is a common anti-pattern; it buys you nothing over `launch` and weakens error visibility.
+
+See [M12 Coroutines — Part F: Exception handling](../deep-dive/12-coroutines.md#part-f-exception-handling) for the full `launch` vs `async` exception-surfacing contract.
 
 ---
 
