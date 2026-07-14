@@ -9,6 +9,15 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 !!! example "Strong answer"
     Modularize **incrementally and driven by pain**, not with a big-bang rewrite. Steps: (1) Extract the leaf, dependency-free layers first — `:core:model` (pure Kotlin), `:core:common`, `:core:designsystem` — since nothing depends *up* into the monolith. (2) Extract `:core:network`/`:core:database` behind interfaces. (3) Carve **one vertical feature** out end-to-end (`:feature:x` + its slice of `:data`/`:domain`) to prove the pattern and set up convention plugins. (4) Repeat feature by feature, using the module graph and build times to prioritize the biggest hotspots. Enforce boundaries with a CI graph-assertion so the monolith can't leak back in. Measure incremental build time before/after to justify the work to leadership.
 
+    ```kotlin
+    // settings.gradle.kts — the extraction order shows up directly as the include order.
+    include(":app")
+    include(":core:model", ":core:common", ":core:designsystem")   // step 1: no deps on :monolith
+    include(":core:network", ":core:database")                     // step 2: behind interfaces
+    include(":feature:checkout", ":data:checkout", ":domain:checkout")  // step 3: first vertical slice
+    include(":monolith")   // still present — everything not yet extracted; shrinks over time
+    ```
+
 !!! warning "Weak answer / red flag"
     "Split it into `:ui`, `:domain`, `:data` and do it all in one branch over a sprint." — big-bang + layer-first = merge hell and no ownership win.
 
@@ -23,6 +32,16 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 
 !!! example "Strong answer"
     **Feature-first at the top level, layer within the feature** (the hybrid). By-layer top-level (`:ui`/`:domain`/`:data`) creates three mega-modules every team edits simultaneously — merge conflicts, zero ownership, and no build parallelism because any `:data` change rebuilds the world. By-feature localizes change and gives each team a module, and shared `:core:*`/`:data`/`:domain` beneath prevents duplication. The graph ends up wide and shallow, which is what parallelizes and localizes rebuilds.
+
+    ```kotlin
+    // By-layer — every team touches the SAME three modules; :data rebuilds for everyone's changes.
+    include(":ui", ":domain", ":data")
+
+    // Hybrid (feature-first, layered within) — each team owns a vertical slice; :core:* is shared.
+    include(":feature:checkout", ":feature:profile", ":feature:search")
+    include(":core:model", ":core:network", ":core:designsystem")
+    // A checkout-only change never touches :feature:profile or :feature:search's build graph.
+    ```
 
 !!! warning "Weak answer / red flag"
     "By-layer, because clean architecture says three layers." — conflates architectural layering (a code concern) with module boundaries (a build/ownership concern).
@@ -39,6 +58,19 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 !!! example "Strong answer"
     They don't depend on each other — that would couple teams, break parallel builds, and risk a Gradle-rejected cycle. Instead, features depend on a **navigation contract**: each feature exposes only a route/typed destination and registers its own nav graph; `:app` assembles the nav host. To navigate to another feature, a feature calls `navController.navigate(route)` against a route it knows by contract, never referencing the target's screens/ViewModels. When a real compile-time contract is needed, put the **interface in a shared `:core`/`:domain` module**, the implementation in the owning feature, and let Hilt inject it — so the caller depends on the abstraction, not the feature.
 
+    ```kotlin
+    // :core:navigation — a route BOTH features can reference without depending on each other.
+    @Serializable data class ProductDetailRoute(val productId: String)
+
+    // :feature:cart — navigates by route, never imports anything from :feature:product.
+    fun CartScreen(onProductClick: (String) -> Unit) { /* onProductClick("sku-1") */ }
+    navController.navigate(ProductDetailRoute(productId))   // :feature:product owns this destination
+
+    // If a compile-time contract IS needed: interface in :domain, impl in the owning feature.
+    interface PromoBannerProvider { fun banner(): PromoBanner? }   // lives in :domain
+    // :feature:promotions provides the @Binds impl; :feature:home injects the interface only.
+    ```
+
 !!! warning "Weak answer / red flag"
     "Feature A just imports Feature B's screen and calls it." — direct feature-to-feature dependency; the exact thing to forbid.
 
@@ -53,6 +85,16 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 
 !!! example "Strong answer"
     `implementation` keeps a dependency off consumers' *compile* classpath; `api` exposes it transitively. Default to `implementation` because it enables **compilation avoidance** — changing an `implementation` dep's internals (or bumping it without an ABI change) doesn't recompile consumers, and it shrinks the classpath the compiler resolves. Use `api` only when your module's **public signatures** return/accept types from that dependency (e.g. `:domain` exposing `:core:model` types). Overusing `api` recreates the monolith: one ABI change ripples through the whole graph and kills incremental-build gains.
+
+    ```kotlin
+    // :domain/build.gradle.kts
+    dependencies {
+        api(project(":core:model"))          // CORRECT: domain's public fun signatures return User, Order...
+        implementation(project(":core:network"))  // internal detail — callers never see OkHttp/Retrofit types
+    }
+    // A consumer of :domain can reference `User` (via the api dep) without declaring :core:model itself.
+    // Bumping OkHttp inside :core:network does NOT recompile anything that depends on :domain.
+    ```
 
 !!! warning "Weak answer / red flag"
     "Use `api` so everything's available everywhere — less hassle." — leaks transitive deps and destroys compilation avoidance.
@@ -69,6 +111,16 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 !!! example "Strong answer"
     Convention plugins in a **`build-logic` included build**. `buildSrc` is an implicit classpath dependency of the entire build, so any edit invalidates all build-logic compilation and busts the configuration cache — a slow feedback loop on a 30-module project. `build-logic` exposes discrete `Plugin<Project>` classes registered via `gradlePlugin { plugins { register(...) } }`; changing one plugin only reconfigures modules that apply it, and the config cache survives unrelated edits. Modules opt in with `plugins { id("myapp.android.feature") }`, which composes library + compose + hilt conventions — eliminating 40 lines of copy-pasted config per module and making `compileSdk` a one-file change.
 
+    ```kotlin
+    // Every module's build.gradle.kts collapses to this — the plugin carries the real config.
+    plugins {
+        id("myapp.android.feature")   // registered in build-logic/convention, see M[convention-plugins]
+    }
+    dependencies { implementation(project(":core:designsystem")) }
+    ```
+
+    Full plugin registration, `AndroidFeatureConventionPlugin` source, and the `build-logic/settings.gradle.kts` wiring live in [Convention Plugins](convention-plugins.md).
+
 !!! warning "Weak answer / red flag"
     "`buildSrc` is fine, it's the same thing." — misses the whole-build invalidation cost that motivates the switch.
 
@@ -83,6 +135,25 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 
 !!! example "Strong answer"
     There's **one graph**, rooted at the single `@HiltAndroidApp` in `:app`, which transitively depends on every module contributing bindings. Modules contribute `@Module @InstallIn(SingletonComponent::class)` classes: `:core:network` `@Provides` Retrofit/OkHttp (types it doesn't own); the repository **interface lives in `:domain`** and its impl + `@Binds` live in `:data`. Feature modules only **consume** — they inject use cases/repositories and host `@HiltViewModel`s, contributing no app-wide infrastructure. For classes Hilt can't inject (workers, content providers, non-Hilt modules) use the `@EntryPoint` accessor. The win: features depend on abstractions, so swapping an impl recompiles nothing downstream.
+
+    ```kotlin
+    // :core:network — provides a type it doesn't own (can't @Inject-constructor OkHttpClient).
+    @Module @InstallIn(SingletonComponent::class)
+    object NetworkModule { @Provides @Singleton fun okHttp(): OkHttpClient = OkHttpClient.Builder().build() }
+
+    // :domain — the CONTRACT.
+    interface UserRepository { suspend fun getUser(id: String): User }
+
+    // :data — the IMPL, bound to the contract; only :data knows Retrofit/Room exist.
+    @Module @InstallIn(SingletonComponent::class)
+    abstract class RepositoryModule {
+        @Binds abstract fun bindUserRepository(impl: UserRepositoryImpl): UserRepository
+    }
+
+    // :feature:profile — only ever sees the interface, never :data's implementation class.
+    @HiltViewModel
+    class ProfileViewModel @Inject constructor(private val repo: UserRepository) : ViewModel()
+    ```
 
 !!! warning "Weak answer / red flag"
     "Each feature module has its own `@HiltAndroidApp` / its own component." — there's exactly one, in `:app`.
@@ -99,6 +170,16 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 !!! example "Strong answer"
     Several levers, ordered by impact: (1) **Graph shape** — keep it wide and shallow so Gradle parallelizes and a change rebuilds only its module + reverse deps; avoid deep chains. (2) **`implementation` over `api`** for compilation avoidance. (3) **Build cache** (local + remote) and the **configuration cache** enabled. (4) **`build-logic` not `buildSrc`** to avoid whole-build invalidation. (5) Keep `:core:model` a pure-JVM module so it compiles fast and doesn't drag Android in. (6) KSP over kapt for annotation processors. (7) Profile with `--scan` / the build analyzer and attack the actual bottleneck module, not guesses.
 
+    ```kotlin
+    // gradle.properties — the two flags that buy the most for the least effort.
+    org.gradle.caching=true          // local + remote build cache: skip re-running unchanged tasks
+    org.gradle.configuration-cache=true  // skip the whole configuration phase on unchanged builds
+    org.gradle.parallel=true         // execute independent module tasks concurrently
+
+    // :core:model/build.gradle.kts — pure Kotlin, no Android Gradle Plugin, no emulator/AGP overhead.
+    plugins { kotlin("jvm") }
+    ```
+
 !!! warning "Weak answer / red flag"
     "Just add more modules — more modules is always faster." — ignores that a deep/wrong-shaped graph and cold builds can regress; module *count* isn't the metric.
 
@@ -113,6 +194,17 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 
 !!! example "Strong answer"
     A `dynamic-feature` module is delivered via Play Feature Delivery — on-demand, conditional, or instant — instead of being in the base APK, shrinking initial download. But the dependency direction **inverts**: the base `:app` doesn't depend on the dynamic feature; the dynamic feature depends on `:app`. That complicates DI (the feature installs at runtime, so Hilt bindings and navigation must be resolved reflectively/`@EntryPoint`-style), complicates testing, and adds `SplitInstallManager` handling plus failure/rollback UX. I'd only reach for it when there's a real payoff — a large, rarely-used feature (heavy AR module, one-time onboarding) or an instant-app entry — not as a default modularization tool.
+
+    ```kotlin
+    // :feature:ar-editor/build.gradle.kts — note the inverted direction vs a normal feature module.
+    plugins { id("com.android.dynamic-feature") }
+    dependencies { implementation(project(":app")) }   // depends ON :app, not the other way around
+
+    // AndroidManifest.xml inside the dynamic-feature module:
+    // <dist:module dist:instant="false" dist:title="@string/ar_editor_title">
+    //     <dist:delivery><dist:on-demand/></dist:delivery>
+    // </dist:module>
+    ```
 
 !!! warning "Weak answer / red flag"
     "Make every feature a dynamic feature to save space." — inverts dependencies everywhere and adds runtime install complexity for no benefit on small features.
@@ -129,6 +221,19 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 !!! example "Strong answer"
     Make violations fail **CI, not code review**. Options: a **module graph assertion** (NowInAndroid ships one) that fails the build when an illegal edge appears (e.g. `:core` depending on a `:feature`, or a feature-to-feature edge); **Konsist** or **custom Lint/ArchUnit-style rules** to assert package/dependency conventions; Kotlin **`internal` visibility** so only the intended surface crosses the boundary; and `api`/`implementation` discipline so transitive leakage is impossible by construction. Gradle already rejects cycles, but I design to avoid them rather than rely on the failure. Boundaries that depend on human vigilance always rot.
 
+    ```kotlin
+    // A Konsist test, run in CI — fails the BUILD, not a human reviewer, on a forbidden edge.
+    @Test
+    fun `feature modules never depend on other feature modules`() {
+        Konsist.scopeFromProject()
+            .files
+            .filter { it.path.contains("/feature/") }
+            .assertFalse { file ->
+                file.imports.any { it.name.contains(".feature.") && !it.name.contains(ownFeatureName(file)) }
+            }
+    }
+    ```
+
 !!! warning "Weak answer / red flag"
     "We tell people in code review not to add bad dependencies." — un-enforced conventions decay; needs a machine gate.
 
@@ -143,6 +248,17 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 
 !!! example "Strong answer"
     Modules aren't free. Costs: **boilerplate tax** (every module needs a build file, namespace, manifest, DI wiring — convention plugins amortize but don't erase it); **navigation/DI indirection** replacing what used to be a direct call; **refactor friction** (moving a class across a boundary is a multi-file operation); **cognitive load** (new engineers must learn the graph); and **cold-build regression** — a from-scratch build of 60 tiny modules can be slower than a monolith. The failure mode is a graph so granular that every trivial change touches five modules. Right-size it: modularize reactively when build time, merge conflicts, or team size demand it, and stop when marginal cost exceeds the parallelism/ownership benefit.
+
+    ```kotlin
+    // The "one class" that becomes FIVE files the moment it's its own module — the tax made concrete.
+    // :feature:changepassword/
+    //   build.gradle.kts        (namespace, plugins, dependencies — even for one screen)
+    //   AndroidManifest.xml     (mandatory, even with nothing to declare)
+    //   ChangePasswordRoute.kt  (nav contract other modules reference)
+    //   ChangePasswordViewModel.kt
+    //   ChangePasswordScreen.kt
+    // vs. one file (`ChangePasswordScreen.kt`) inside an existing module before extraction.
+    ```
 
 !!! warning "Weak answer / red flag"
     "There are no downsides, more modules is strictly better." — signals they've never paid the maintenance cost at scale.
@@ -159,6 +275,17 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 !!! example "Strong answer"
     A `:core:designsystem` module holding **pure design** — theme, typography, color, spacing, and atomic composables (buttons, icons, chips) with **no domain knowledge**. Components that need domain models (an item card) go in `:core:ui`, which depends on `:core:designsystem` + `:core:model`. Every feature depends on `:core:designsystem` via `implementation`. Because it's dependency-free of app logic, the same module can be consumed by a Wear/TV target or a second app. Enforce that no feature reimplements a button by keeping design tokens `internal` to the module's public API and reviewing new atoms centrally.
 
+    ```kotlin
+    // :core:designsystem — knows colors/typography, knows NOTHING about the app's domain.
+    @Composable fun AppTheme(content: @Composable () -> Unit) { MaterialTheme(colorScheme = AppColors, content = content) }
+    @Composable fun PrimaryButton(text: String, onClick: () -> Unit) { Button(onClick) { Text(text) } }
+
+    // :core:ui — depends on BOTH designsystem and model; this is where domain-aware components live.
+    @Composable fun ProductCard(product: Product) {   // Product comes from :core:model
+        PrimaryButton(text = product.name) { /* ... */ }   // built from designsystem primitives
+    }
+    ```
+
 !!! warning "Weak answer / red flag"
     "Each feature styles its own components." — guarantees visual drift and duplicated code.
 
@@ -173,6 +300,24 @@ Senior/lead modularization questions are rarely "what is a module." They're "def
 
 !!! example "Strong answer"
     Dependencies point **downward/inward only**: `:app → :feature → :domain/:data → :core`. Concrete rules: `:core` never depends on a `:feature`; **no feature depends on another feature** (communicate via nav contracts / shared interfaces); `:domain` is pure and depends only on `:core:model` (+`:core:common`); `:data` depends on `:domain` (to implement its interfaces) and infrastructure `:core:*`; `:app` is a thin top that wires everything and hosts the Hilt root. No cycles — Gradle rejects them, but I design against them. This is the dependency-inversion principle at module granularity: high-level policy (`:domain`) doesn't depend on low-level detail (`:data`); both meet at an interface.
+
+    ```kotlin
+    // :domain/build.gradle.kts — pure, only depends inward toward :core.
+    dependencies { implementation(project(":core:model")) }   // NOT :data, NOT any :feature
+
+    // :data/build.gradle.kts — implements :domain's interfaces; also allowed to reach infra :core:*.
+    dependencies {
+        implementation(project(":domain"))
+        implementation(project(":core:network"))
+        implementation(project(":core:database"))
+    }
+
+    // :feature:profile/build.gradle.kts — the only module allowed to depend on BOTH :domain and :data.
+    dependencies {
+        implementation(project(":domain"))   // for the repository interface it injects
+        implementation(project(":data"))     // for DI wiring only — never references :data types directly
+    }
+    ```
 
 !!! warning "Weak answer / red flag"
     "Any module can depend on any other as long as it compiles." — no dependency rule means the graph degenerates into a monolith with extra steps.
