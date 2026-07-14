@@ -156,6 +156,15 @@ flowchart TD
 !!! warning "Test what users actually receive"
     `assembleRelease` (a universal APK) is *not* what a user downloads. To reproduce real behavior — especially for language/ABI edge cases or missing-resource bugs — install via `bundletool` splits, or use Play's **Internal App Sharing** (below).
 
+### Language splits and a runtime locale change
+
+At install time, a device only downloads the base APK plus the density/ABI/**language** splits matching its *current* configuration — e.g. an `arm64`/`xxhdpi`/Spanish phone gets the `es` language split, not `en`, `fr`, `ko`, etc. The question that trips people up: what happens if the user changes the language *after* install — either the system locale, or (Android 13+) a **per-app language** via `AppCompatDelegate.setApplicationLocales()` — to one whose split was never downloaded?
+
+Google Play's device-targeted delivery handles this transparently: because the locale can change at any time, **Play automatically fetches the missing language split** the next time it's needed, in the background over the Play Store's own delivery channel — this is not something your app code drives with `SplitInstallManager` (that API is for *dynamic feature modules*, which are opt-in; automatic configuration splits like language are not). Two consequences worth stating in an interview:
+
+- **It requires network access and isn't instantaneous.** There's a window — right after the language change, before the split lands — where the app may render the base module's default/fallback-language strings instead of the newly-selected one. Keep the base module's default locale strings complete for exactly this reason; don't assume every string resource is always resolvable in the "current" language the instant the user switches.
+- **It's Play's mechanism, not your code's.** You don't call anything to trigger it; it's part of Play's install/update pipeline for the app the same way a missing density or ABI split would be backfilled. If you sideload (no Play), or the user is offline for a genuinely new language, that split simply isn't available until Play can deliver it.
+
 ---
 
 ## Dynamic Feature Modules

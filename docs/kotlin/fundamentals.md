@@ -320,6 +320,45 @@ connect("api.example.com", tls = false)   // named args skip the middle defaults
 
 ---
 
+## Backing fields & backing properties
+
+Two related but distinct mechanisms let a property's storage differ from what it exposes.
+
+**Backing field** — the implicit, compiler-managed field referenced by the identifier `field` inside a custom accessor. It exists *only if the compiler determines it's needed* (i.e., at least one accessor uses the default implementation or references `field` explicitly):
+
+```kotlin
+var counter: Int = 0
+    set(value) {
+        field = if (value >= 0) value else field   // `field` IS the auto-generated backing field
+    }
+```
+
+You never declare `field` — the compiler synthesizes it because the setter references it. This works as long as the public and private representations are **the same type**.
+
+**Backing property** — when that's not expressive enough (different public/private type, lazy computation, exposing a read-only view of a mutable store), you declare a second, private property yourself and back the public one with it:
+
+```kotlin
+private var _table: Map<String, Int>? = null
+val table: Map<String, Int>
+    get() {
+        if (_table == null) {
+            _table = HashMap()          // computed lazily, cached in the private property
+        }
+        return _table ?: throw AssertionError("Set to null by another thread")
+    }
+```
+
+This is the same idiom behind every `_state`/`state`, `_events`/`events` pair you'll see in a ViewModel — a private `MutableStateFlow`/`MutableSharedFlow`/`MutableList` backing a public read-only `StateFlow`/`SharedFlow`/`List`:
+
+```kotlin
+private val _state = MutableStateFlow<UiState>(UiState.Loading)
+val state: StateFlow<UiState> = _state.asStateFlow()   // _state IS the backing property
+```
+
+See [M5 ViewModel & LiveData](../deep-dive/05-viewmodel-livedata.md#b6-mutablelivedata) and [M13 Flow](../deep-dive/13-flow.md#part-c-stateflow) for this pattern in context. The distinction that matters in an interview: a backing *field* is compiler-generated and same-typed; a backing *property* is one you write by hand precisely because the public and private shapes need to differ.
+
+---
+
 ## `data class`
 
 `data class` auto-generates, from the **primary constructor properties only**:
@@ -347,6 +386,25 @@ The idiom: data classes should model *immutable value objects* — all `val`, al
 val a = User("1", "Ann")
 val b = a.copy(name = "Anne")   // structural clone, one field changed
 ```
+
+### Can a `data class` have an empty constructor?
+
+No — the compiler rejects it outright:
+
+```kotlin
+data class Empty()   // error: Data class must have at least one primary constructor parameter
+```
+
+Every other class kind is fine with a no-arg primary constructor; `data class` specifically requires **at least one** parameter, and every primary-constructor parameter must be `val`/`var`. The reason is that a data class's entire value is the compiler-generated `equals`/`hashCode`/`toString`/`copy`/`componentN`, all derived from the primary-constructor properties — with zero properties those would be degenerate (`equals` always `true`, `hashCode` constant, `toString` a bare `"Empty()"`, `copy()` pointless). That's overwhelmingly a mistake rather than an intentional design, so Kotlin makes it a compile error instead of a silently-useless type.
+
+This is different from a constructor that's merely *callable* with no arguments — giving every parameter a default still satisfies the "at least one primary-constructor parameter" rule:
+
+```kotlin
+data class Point(val x: Int = 0, val y: Int = 0)
+val origin = Point()   // legal — calls the primary ctor with x=0, y=0 via defaults
+```
+
+`Point()` isn't an empty-constructor data class; it's a normal two-property data class whose constructor happens to be zero-arg-callable. The rule is about the *declared parameter list*, not whether a caller must supply arguments.
 
 ### Pros & Cons of Data Classes
 

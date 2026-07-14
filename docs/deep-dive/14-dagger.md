@@ -443,6 +443,47 @@ class ViewModelFactory @Inject constructor(
 
 ---
 
+## `@Inject` vs `@AssistedInject`
+
+Plain `@Inject` requires Dagger to supply **every** constructor parameter from the graph. That breaks down the moment a class needs a mix: some dependencies are graph-wide (a repository, a dispatcher, an analytics client) and some are only known **at the call site** — an item id from a list click, a `View`, a value that has no single graph-scoped answer. You can't bind those with `@Provides` because there's no one correct value for the whole graph.
+
+Before assisted injection existed, the workaround was a hand-written factory interface with a manual `create(id): Foo` method that new'd up the object itself, reaching into a `Provider` for each graph-supplied dependency. **`@AssistedInject`** formalizes exactly that pattern and lets Dagger generate the factory:
+
+```kotlin
+class ItemPresenter @AssistedInject constructor(
+    private val analytics: Analytics,        // graph-provided — Dagger resolves this
+    @Assisted private val itemId: String,    // runtime-only — supplied at create() time
+) {
+    @AssistedFactory
+    interface Factory {
+        fun create(itemId: String): ItemPresenter   // signature mirrors the @Assisted params
+    }
+}
+
+// Inject the FACTORY (a normal graph node), not ItemPresenter itself:
+class ItemFragment @Inject constructor(
+    private val presenterFactory: ItemPresenter.Factory,
+) {
+    fun onItemSelected(id: String) {
+        val presenter = presenterFactory.create(id)   // graph deps + runtime id, wired together
+    }
+}
+```
+
+Dagger generates the `Factory` implementation: it holds `Provider`s for every graph-supplied constructor parameter (`analytics`) and, in `create()`, combines them with the `@Assisted` arguments to build the object — the same shape as the hand-written factory, minus the boilerplate.
+
+| | `@Inject` | `@AssistedInject` |
+|---|---|---|
+| Where do constructor params come from? | Entirely the graph | Graph **+** runtime-supplied `@Assisted` params |
+| What you inject at the use site | The type itself | A generated `@AssistedFactory` interface for the type |
+| Scoping | Normal scope rules apply | The *factory* is a normal graph node (can be scoped); the *created instance* is not cached by Dagger — you own its lifetime |
+| Typical Android use | Repositories, use cases, most classes | A presenter/ViewModel/controller that's DI-managed but needs a runtime id, a per-row adapter helper, anything instantiated per-argument |
+
+!!! note "This is exactly what `@HiltViewModel(assistedFactory = ...)` uses"
+    A `ViewModel` that needs both an injected repository and a runtime argument (e.g. a detail screen's item id) is the canonical assisted-injection use case on Android — see [M5 ViewModel & LiveData — `ViewModelProvider.Factory`](05-viewmodel-livedata.md#a6-viewmodelproviderfactory) for the `CreationExtras`-based wiring Hilt generates on top of exactly this mechanism.
+
+---
+
 ## How Hilt builds on all of this
 
 Everything above is what Hilt **generates for you**. When you write `@HiltAndroidApp`, `@AndroidEntryPoint`, `@Module @InstallIn(SingletonComponent::class)`, `@HiltViewModel`, Hilt's processor emits:
